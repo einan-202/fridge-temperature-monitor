@@ -14,6 +14,8 @@ RUN pip install --no-cache-dir -r requirements.txt -r requirements-dev.txt
 COPY app ./app
 COPY tests ./tests
 COPY pytest.ini .
+COPY alembic.ini .
+COPY migrations ./migrations
 
 EXPOSE 8000
 

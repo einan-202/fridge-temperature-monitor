@@ -1,6 +1,6 @@
 # Engineering Notes — Fridge Temperature Monitor
 
-This document captures the reasoning behind the choices made so far: the **initial scaffold** and the **backend database connectivity** step that followed it (both complete). Business models and logic, the `/api/status` endpoint, and frontend tests are still pending. For the full, approved multi-step plan these steps are drawn from, see [docs/cursor/plan-phase-1-scaffold.md](docs/cursor/plan-phase-1-scaffold.md).
+This document captures the reasoning behind the choices made so far: the **initial scaffold** and the **backend database connectivity** step that followed it (both complete). The Phase 2 schema/migrations step is also in place (see below). Ingestion, business endpoints, the `/api/status` endpoint, and frontend tests are still pending. For the full, approved multi-step plan these steps are drawn from, see [docs/cursor/plan-phase-1-scaffold.md](docs/cursor/plan-phase-1-scaffold.md).
 
 ## Stack choices
 
@@ -11,7 +11,7 @@ This document captures the reasoning behind the choices made so far: the **initi
 
 ## Database connectivity first, business logic deferred
 
-**Current state:** the backend now connects to PostgreSQL. Business models, tables, and logic are still deliberately deferred.
+**Current state:** the backend connects to PostgreSQL. The four-table schema and its models now exist (see "Phase 2: schema and migrations" below); ingestion, seed, normalization and business endpoints are still deferred.
 
 - `backend/app/database.py` creates a SQLAlchemy engine (`psycopg2-binary` driver, `pool_pre_ping=True`) from the `DATABASE_URL` environment variable, and exposes `check_connection()`, which runs `SELECT 1` and returns `False` on any failure.
 - `GET /health` uses it and returns `{"status": "ok", "database": "connected"}`, or HTTP **503** with `{"status": "error", "database": "unreachable"}` when the database can't be reached. The backend's Docker healthcheck calls this endpoint, so a lost database connection shows up as an unhealthy backend.
@@ -21,18 +21,42 @@ This document captures the reasoning behind the choices made so far: the **initi
 
 **Why this was split from the scaffold step (original decision, still valid):** the scaffold step was scoped to proving three containers build and start cleanly, health checks pass, hot reload works, and the frontend/backend/proxy chain works end-to-end. Connecting the database was then a separate step with its own small, independently verifiable diff. That keeps "does the container network/compose setup work" apart from "does the DB driver/connection/query logic work."
 
-**Still deferred:** tables and models, business endpoints, and the `/api/status` round-trip endpoint.
+**Still deferred:** ingestion, seed data, normalization, business endpoints, and the `/api/status` round-trip endpoint. (The tables and models were added in Phase 2 - see below.)
 
 ## Testing
 
-The backend has **4 passing Pytest tests**, written alongside the DB connectivity feature rather than retrofitted:
+The backend has **26 passing Pytest tests** (2 + 2 from the connectivity step, plus 22 schema/migration integration tests), written alongside the features rather than retrofitted:
 
 - **Unit (2), `backend/tests/test_health.py`:** `/health` returns 200 when the database check succeeds, and 503 when it fails. `check_connection` is monkeypatched, so these need no database.
 - **Integration (2), `backend/tests/test_database.py`, marked `integration`:** `check_connection()` and `/health` against the real PostgreSQL container, so they exercise the actual connection.
+- **Integration (4), `backend/tests/test_migrations.py`:** upgrade creates exactly the four tables (no `branches`), downgrade removes them and upgrade works again (on a throwaway database), the shared test DB is at head, and the expected constraints/indexes exist.
+- **Integration (18), `backend/tests/test_models.py`:** the DB-enforced constraints listed below (unique/check/FK/NOT NULL, `NULLS NOT DISTINCT`, case-insensitive fridge identity, NULL and extreme temperatures).
 
-Tests run inside the backend container (`docker compose exec backend pytest`), where the real `db` hostname and `DATABASE_URL` are available. Test dependencies are in `requirements-dev.txt`, separate from runtime requirements. When verifying, a run that collects zero tests (Pytest exit code 5) is not counted as a pass.
+Run them inside the backend container, where the real `db` hostname and `DATABASE_URL` are available:
+
+```
+docker compose exec backend pytest                      # all 26
+docker compose exec backend pytest -m "not integration" # 2 unit tests, no database needed
+docker compose exec backend pytest -m integration       # 24 database tests
+```
+ Test dependencies are in `requirements-dev.txt`, separate from runtime requirements. When verifying, a run that collects zero tests (Pytest exit code 5) is not counted as a pass.
 
 **Frontend tests (Vitest + React Testing Library) are still pending.**
+
+## Phase 2: schema and migrations
+
+Only the database schema, models, Alembic migration and their tests are done so far. Ingestion, seed, normalization and endpoints are still pending.
+
+- **Four tables, no `branches` table.** `fridges`, `loggers`, `logger_assignments`, `temperature_readings`. A branch has no attributes of its own, so it is just `fridges.branch_name`. A fridge is identified by branch plus name (`Dairy` exists in two branches), enforced by a functional unique index on `(lower(branch_name), lower(name))`. Whitespace trimming/collapsing is a later normalization step; the index only handles casing.
+- **Invalid readings are `temperature_c IS NULL`, not a status column.** `raw_value` (plus `raw_timestamp`, `source_file`, `source_row`) preserves the original text, so `ERR` is stored as NULL with raw value `ERR` and explains itself.
+- **No rejection thresholds.** `temperature_c` is plain `NUMERIC` with no precision limit and no range `CHECK`; 150 or -80 are stored as given. Plausibility is an analytics concern.
+- **`temperature_readings.fridge_id` is `NOT NULL`.** It records the fridge a reading was reported under, so reassigning a logger later never rewrites history. `UNIQUE (logger_id, measured_at)` is the dedup guarantee.
+- **Assignment dates are nullable and mean "unknown"; they are never inferred.** Example: logger TL-0417 is reported at two fridges with a gap in between and nothing says when it moved, so it gets two assignments with both dates NULL. `UNIQUE NULLS NOT DISTINCT (logger_id, fridge_id, assigned_from)` (PostgreSQL 16) makes two NULL `assigned_from` values collide, so an unknown-date pairing can be recorded only once while the same pair with different known start dates is allowed. A `CHECK` requires `assigned_to > assigned_from` when both are known.
+- **Naive local timestamps.** All timestamps are `TIMESTAMP` without time zone; the source data carries no zone, so no timezone or DST logic is invented.
+- **Names are stable.** The SQLAlchemy metadata has a `naming_convention`, and constraints are named explicitly (`uq_loggers_code`, `ck_loggers_unit_valid`, ...), so they are the same in the models, the migration and the database. `alembic check` reports no drift between models and migration.
+- **Hand-written migration, run manually.** `0001_initial_schema` is written by hand (explicit `upgrade` and a working `downgrade`), not autogenerated. Run it with `docker compose exec backend alembic upgrade head`. It is deliberately not run at container start: that keeps the Dockerfile `CMD`, startup and `/health` unchanged, and keeps schema changes an explicit action rather than a side effect of a restart (including restarts caused by `--reload`). `migrations/` is bind-mounted so revisions created in the container appear on the host; `alembic.ini` and `migrations/` are also copied into the image (changing `alembic.ini` needs `docker compose build backend`).
+- **`env.py` URL.** It uses `config.attributes["url"]` if set, else `-x url=...`, else the `DATABASE_URL` environment variable. Tests use the first form.
+- **Isolated test database.** Integration tests use `<POSTGRES_DB>_test` (e.g. `fridge_monitor_db_test`), dropped and recreated at the first test that needs it, with the schema built by running the real Alembic migration (never `create_all`). A connection is made to the server's `postgres` database with `AUTOCOMMIT` to do this, and the helper refuses to touch any database not named `*_test`/`*_test_scratch`. Each test gets a session on an outer transaction that is rolled back at the end (`join_transaction_mode="create_savepoint"`), so tests can trigger an `IntegrityError` inside `begin_nested()` and keep going. The up/down/up migration test uses a throwaway `<POSTGRES_DB>_test_scratch` database that is dropped afterwards. The fixtures are lazy, so `pytest -m "not integration"` needs no database at all.
 
 ## Why a Vite dev-server proxy instead of `VITE_API_URL`
 
@@ -87,7 +111,7 @@ After restarting the `db` service, the log showed no further `FATAL` lines. The 
 
 ## What's deliberately NOT yet implemented (and why)
 
-- **Business models and queries** — connectivity is implemented (engine, `database.py`, DB-backed `/health`), but there are no tables, models, or business queries yet. Deferred so each step stays small and independently verifiable (see above).
+- **Ingestion, seed, normalization and business queries** — connectivity and the four schema tables/models exist, but nothing reads spreadsheets, normalizes names/timestamps/units, seeds data, or queries the tables for business logic yet. Deferred so each step stays small and independently verifiable (see above).
 - **`/api/*` business endpoints** — only the proxy path is reserved (`/api` forwards to the backend in `vite.config.ts`); no backend route exists at `/api/*` yet. This comes with the `/api/status` step in the plan.
 - **Frontend tests** — no Vitest/React Testing Library files or dependencies in `package.json` yet. The approved plan calls for tests to be written *alongside* each feature rather than retrofitted, so the frontend API client tests will arrive with that feature. Backend tests are in place (see "Testing" above).
 - **Authentication** — out of scope for the entire Phase 1 plan, not just this step; there's no business functionality yet that would need to be protected.
