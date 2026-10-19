@@ -1,8 +1,8 @@
 """Fridge Temperature Monitor backend — FastAPI application entrypoint.
 
-Phase 1 scaffold: app-level health check only. Database connectivity,
-`/api/*` business endpoints, and automated tests are intentionally
-deferred to later steps (see NOTES.md).
+Phase 1: `/health` now checks database connectivity (see
+app/database.py). `/api/*` business endpoints and business models/tables
+are intentionally deferred to later steps.
 """
 
 from fastapi import FastAPI

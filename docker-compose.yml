@@ -13,8 +13,14 @@ services:
   backend:
     build: ./backend
     env_file: .env
+    environment:
+      # Built from the POSTGRES_* vars above via docker-compose variable
+      # substitution (read from .env) — "db" is the Docker-network
+      # hostname of the db service, not a hardcoded value in app code.
+      - DATABASE_URL=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
     volumes:
       - ./backend/app:/app/app
+      - ./backend/tests:/app/tests
     ports:
       - "8000:8000"
     depends_on:
