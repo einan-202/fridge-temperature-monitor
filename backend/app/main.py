@@ -1,7 +1,7 @@
 """Fridge Temperature Monitor backend — FastAPI application entrypoint.
 
-`/health` checks database connectivity. Phase 3.1 adds the read-only
-weekly retrospective API under `/api/*`. Uploads are not implemented yet.
+`/health` checks database connectivity. Phase 3 adds the weekly retrospective
+read API and the historical / weekly upload endpoints under `/api/*`.
 """
 
 from fastapi import FastAPI
