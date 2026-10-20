@@ -3,7 +3,7 @@ import { OverviewLoadError, OVERVIEW_RETRY_DELAYS_MS, sleep } from "../api/loadE
 import { fetchOverview } from "../api/overview";
 import { summarizeFridges } from "../dashboard/findings";
 import { groupByCity } from "../dashboard/sort";
-import type { OverviewResponse } from "../types/overview";
+import type { FridgeOverview, OverviewResponse } from "../types/overview";
 import { DashboardSkeleton } from "./DashboardSkeleton";
 import { FridgeCard } from "./FridgeCard";
 import { SummaryCounters } from "./SummaryCounters";
@@ -14,7 +14,18 @@ type LoadState =
   | { status: "error"; message: string }
   | { status: "ready"; data: OverviewResponse };
 
-export function Dashboard() {
+export interface OpenFridgeRequest {
+  fridge: FridgeOverview;
+  week: string;
+  weekStart: string;
+  weekEnd: string;
+}
+
+interface DashboardProps {
+  onOpenFridge?: (request: OpenFridgeRequest) => void;
+}
+
+export function Dashboard({ onOpenFridge }: DashboardProps = {}) {
   const [week, setWeek] = useState<string | null>(null);
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const requestId = useRef(0);
@@ -139,7 +150,21 @@ export function Dashboard() {
                 </h2>
                 <div className="city-group__grid">
                   {group.fridges.map((fridge) => (
-                    <FridgeCard key={fridge.fridge_id} fridge={fridge} />
+                    <FridgeCard
+                      key={fridge.fridge_id}
+                      fridge={fridge}
+                      onOpen={
+                        onOpenFridge && week && state.data.week
+                          ? () =>
+                              onOpenFridge({
+                                fridge,
+                                week,
+                                weekStart: state.data.week!.start,
+                                weekEnd: state.data.week!.end,
+                              })
+                          : undefined
+                      }
+                    />
                   ))}
                 </div>
               </section>

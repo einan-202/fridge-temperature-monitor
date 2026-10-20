@@ -6,22 +6,36 @@ import { FridgeIcon, StatusIcon } from "./icons";
 
 interface FridgeCardProps {
   fridge: FridgeOverview;
+  onOpen?: (fridge: FridgeOverview) => void;
 }
 
-/**
- * Presentational fridge card. Not clickable in Phase 3.3A; structure is kept
- * reusable for a future detail open action.
- */
-export function FridgeCard({ fridge }: FridgeCardProps) {
+export function FridgeCard({ fridge, onOpen }: FridgeCardProps) {
   const finding = deriveFinding(fridge);
   const temperature = formatTemperatureC(fridge.max_temperature_c);
   const loggers = loggerCodesLabel(fridge);
 
   return (
     <article
-      className={`fridge-card fridge-card--${finding.tone}`}
+      className={`fridge-card fridge-card--${finding.tone}${onOpen ? " fridge-card--clickable" : ""}`}
       data-fridge-id={fridge.fridge_id}
       data-tone={finding.tone}
+      onClick={onOpen ? () => onOpen(fridge) : undefined}
+      onKeyDown={
+        onOpen
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onOpen(fridge);
+              }
+            }
+          : undefined
+      }
+      tabIndex={onOpen ? 0 : undefined}
+      aria-label={
+        onOpen
+          ? `View details for ${fridge.name}, ${fridge.branch}`
+          : undefined
+      }
     >
       <header className="fridge-card__header">
         <span className="fridge-card__icon" aria-hidden="true">

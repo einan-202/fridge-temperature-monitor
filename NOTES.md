@@ -6,11 +6,12 @@ Approximately 13 hours so far, including planning, implementation, testing, debu
 
 ## 2. Key decisions and trade-offs
 
-**Implemented through Phase 3.3B:** four-table schema and migration; normalization and ingestion; sample seed; weekly retrospective analysis and read APIs; historical/weekly upload APIs; weekly fridge dashboard; Weekly Upload UI.
+**Implemented through Phase 3.3C:** four-table schema and migration; normalization and ingestion; sample seed; weekly retrospective analysis and read APIs; historical/weekly upload APIs; weekly fridge dashboard; Weekly Upload UI; fridge details with daily charts.
 
 **Why these choices (brief):**
 
 - **Weekly retrospective analysis** matches Summer’s weekly upload workflow and avoids misleading real-time status claims.
+- **Reporting week default:** Weekly reporting follows ISO 8601 (Monday–Sunday) as a standard, consistent default. The reporting week should be configurable in a future version based on Summer's workflow.
 - **Historical imports are atomic** so a failed first load cannot leave a half-built initial dataset.
 - **Weekly imports commit per valid file** so one problematic logger does not block other branches.
 - **Unknown logger move dates are not invented** because that could attach readings to the wrong fridge.
@@ -38,19 +39,21 @@ Approximately 13 hours so far, including planning, implementation, testing, debu
 - Commits live in the caller, not in the ingestion service.
 - TL-0231 is Fahrenheit per the assignment data (its sample values 38.3 and 39 agree); the file has no unit column.
 
-**Phase 3 analysis (backend):** weekly retrospective, not real time. Excursions strictly above 5 °C stay visible after recovery. An `ERR` ends a run like a gap. Coverage is an estimate from sample intervals; unobserved time is never called safe. `end_of_data` vs `end_of_period` are distinct. Provisional constants: Monday week start, `MIN_COVERAGE=0.90`.
+**Phase 3 analysis (backend):** weekly retrospective, not real time. Excursions strictly above 5 °C stay visible after recovery. An `ERR` ends a run like a gap. Coverage is an estimate from sample intervals; unobserved time is never called safe. `end_of_data` vs `end_of_period` are distinct. Provisional: `MIN_COVERAGE=0.90`. Week bounds follow the ISO 8601 default above.
 
 **Phase 3.2 upload APIs** (`POST /api/uploads/review`, `/import`): same Phase 2 ingestion; review is a dry run (rolled back); historical import is atomic; weekly import commits per ready file. Filename logger detection, per-reading fridge resolution, staged moves and new loggers, fridge-conflict pre-check, Haifa unit confirmation for unknown historical loggers.
 
-**Phase 3.3A dashboard:** weekly report from `GET /api/overview` only (no `/api/series` here). Findings come from overview counts, not temperature math in React. Cards are not clickable yet. UX notes are under Frontend Decisions.
+**Phase 3.3A dashboard:** weekly report from `GET /api/overview` only (no `/api/series` here). Findings come from overview counts, not temperature math in React. Cards open Fridge Details. UX notes are under Frontend Decisions.
 
-**Still planned (not built):** Initial Setup UI; fridge detail panel and charts; richer card timestamps once overview exposes them (see Unfinished). Upload workflow design remains in `docs/cursor/plan-phase-3.md`.
+**Phase 3.3C fridge details:** one screen per fridge and selected week (not in main nav). Charts use `GET /api/series/{logger_id}/{fridge_id}` once per logger; days switch locally. Weekly findings use series excursion, gap, and invalid fields only.
+
+**Still planned (not built):** Initial Setup UI; richer card timestamps once overview exposes them (see Unfinished). Upload workflow design remains in `docs/cursor/plan-phase-3.md`.
 
 **Frontend Decisions and Lessons Learned**
 
 - **Web, not native:** React + TypeScript covers desktop and phone browsers from one codebase (LAN via the Vite proxy). A separate native app would duplicate an MVP that already runs in the browser.
 - **Dashboard:** Fridge-first weekly report; cities/loggers A–Z; short English; red/amber/green/neutral from saved findings. Desktop city grid vs stacked mobile cards. Historical data is never shown as live monitoring.
-- **Navigation:** `useState` switches Dashboard / Weekly Upload instead of React Router—less plumbing for two screens, but no deep links or back-button history.
+- **Navigation:** `useState` switches Dashboard / Weekly Upload instead of React Router—less plumbing, but no deep links. Fridge Details open from a card and are not a third nav item.
 - **Weekly upload:** Select → Review → Resolve → Import. Needs Attention first; ready files collapsed; per-file corrections. Partial import keeps unresolved `File` objects in the tab so other files can still save.
 - **Logger identity:** A filename `TL-` code or one consistent Logger-column value is a suggestion. The user confirms it; mixed or conflicting cells stay blocking; sheet values are never overwritten. New loggers/fridges and dated moves cover real changes.
 - **Index bug:** After remove/import, selections keyed by file index could attach the previous file’s logger to the next slot. Multi-file tests caught it; remaining files are remapped, with regression tests.
@@ -78,18 +81,18 @@ Approximately 13 hours so far, including planning, implementation, testing, debu
 - Phase 3.2: `app/upload.py`, `POST /api/uploads/review` and `/import`.
 - Phase 3.3A: weekly dashboard (header, week selector, summary counters, city-grouped fridge cards).
 - Phase 3.3B: Weekly Upload UI (select, review, per-file corrections, partial import).
+- Phase 3.3C: Fridge Details (daily charts from `/api/series`, weekly findings from backend fields).
 
 **Unfinished:**
 
 - React screen for Initial Setup (historical import).
-- Fridge detail view and temperature charts.
-- Overview fields the mockup wanted but cards omit: excursion start (“First detected”), end/recovery time, duration label, gap start/end/minutes, invalid reading timestamp/raw value. Do not invent these in the UI; extend the API only with approval.
+- Overview cards still omit event timestamps; those appear on Fridge Details from `/api/series`. Do not invent them on cards; extend overview only with approval.
 
-**Tests (last verified):** 224 backend tests (`pytest`); 60 frontend tests (`npm test`); TypeScript check and frontend production build succeeded.
+**Tests (last verified):** 224 backend tests (`pytest`); 78 frontend tests (`npm test`); TypeScript check and frontend production build succeeded.
 
 ### With one more hour
 
-With one more hour, I would prioritize implementing and testing the Initial Setup (historical import) UI so a new environment can be loaded without using the API by hand. I would defer charts and extra visual polish.
+With one more hour, I would prioritize implementing and testing the Initial Setup (historical import) UI so a new environment can be loaded without using the API by hand.
 
 ## 5. AI usage
 

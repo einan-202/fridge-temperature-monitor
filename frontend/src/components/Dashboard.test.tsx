@@ -266,4 +266,23 @@ describe("Dashboard", () => {
     expect(cards).toHaveLength(1);
     expect(cards[0]).toHaveTextContent("Logger: TL-0200, TL-0800");
   });
+
+  it("asks to open fridge details for the clicked card and selected week", async () => {
+    const user = userEvent.setup();
+    const onOpenFridge = vi.fn();
+    mockOverview(sampleOverview());
+    render(<Dashboard onOpenFridge={onOpenFridge} />);
+    await screen.findByRole("article", {
+      name: "View details for Cream cakes, Rishon LeZion",
+    });
+    await user.click(
+      screen.getByRole("article", {
+        name: "View details for Cream cakes, Rishon LeZion",
+      }),
+    );
+    expect(onOpenFridge).toHaveBeenCalledTimes(1);
+    expect(onOpenFridge.mock.calls[0][0].fridge.fridge_id).toBe(4);
+    expect(onOpenFridge.mock.calls[0][0].fridge.name).toBe("Cream cakes");
+    expect(onOpenFridge.mock.calls[0][0].week).toBe("2026-09-14");
+  });
 });
