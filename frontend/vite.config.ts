@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 // https://vite.dev/config/
@@ -17,11 +17,16 @@ export default defineConfig({
         target: "http://backend:8000",
         changeOrigin: true,
       },
-      // Reserved for future business endpoints (not implemented yet).
       "/api": {
         target: "http://backend:8000",
         changeOrigin: true,
       },
     },
+  },
+  test: {
+    environment: "jsdom",
+    globals: true,
+    setupFiles: "./src/test/setup.ts",
+    css: true,
   },
 });
