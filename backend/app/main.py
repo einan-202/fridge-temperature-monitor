@@ -1,17 +1,17 @@
 """Fridge Temperature Monitor backend — FastAPI application entrypoint.
 
-Phase 1: `/health` now checks database connectivity (see
-app/database.py). `/api/*` business endpoints and business models/tables
-are intentionally deferred to later steps.
+`/health` checks database connectivity. Phase 3.1 adds the read-only
+weekly retrospective API under `/api/*`. Uploads are not implemented yet.
 """
 
 from fastapi import FastAPI
 
-from app.routers import health
+from app.routers import api, health
 
 app = FastAPI(title="Fridge Temperature Monitor API")
 
 app.include_router(health.router)
+app.include_router(api.router)
 
 
 @app.get("/")

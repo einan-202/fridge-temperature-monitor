@@ -58,11 +58,13 @@
 
 ## 4. Unfinished, and one more hour
 
-**Unfinished:** analytics (excursions above 5 °C, durations, warming, gaps), the upload endpoints, the dashboard, and frontend tests. The app UI still shows backend health only.
+**Implemented (Phase 3.1):** weekly retrospective analysis (`app/analysis.py`) and read-only API (`GET /api/lookups`, `/api/overview?week=`, `/api/series/{logger_id}/{fridge_id}?week=`). Constants: `THRESHOLD_C=5.0`, `GAP_MIN=30`, warming 4/1.0/0.5, provisional `WEEK_START_DAY=Monday` and `MIN_COVERAGE=0.90`. Coverage is an estimate from sample intervals, not continuous proof. `end_of_data` and `end_of_period` are distinct.
 
-**Tests:** 120 backend tests pass (70 unit, 50 integration). No frontend tests.
+**Unfinished:** upload endpoints, the dashboard UI, and frontend tests. The app UI still shows backend health only.
 
-**One more hour:** the analysis functions (excursions and gaps) with unit tests, since the dashboard and upload both build on them.
+**Tests:** 160 backend tests pass. No frontend tests.
+
+**One more hour:** weekly upload review/import endpoints, since the dashboard needs data from real uploads next.
 
 ## 5. AI usage
 
