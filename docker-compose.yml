@@ -22,6 +22,7 @@ services:
       - ./backend/app:/app/app
       - ./backend/tests:/app/tests
       - ./backend/migrations:/app/migrations
+      - ./sample_data:/app/sample_data:ro
     ports:
       - "8000:8000"
     depends_on:
