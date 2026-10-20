@@ -51,7 +51,7 @@ Approximately 13 hours so far, including planning, implementation, testing, debu
 
 **Frontend Decisions and Lessons Learned**
 
-- **Web, not native:** React + TypeScript covers desktop and phone browsers from one codebase (LAN via the Vite proxy). A separate native app would duplicate an MVP that already runs in the browser.
+- **Web, not native:** Chose a responsive React web application instead of a native mobile app. A single codebase supports desktop and mobile browsers, while Docker Compose enables simple local setup without deployment or app installation. This reduces development and maintenance complexity while meeting Summer's mobile usability needs.
 - **Dashboard:** Fridge-first weekly report; cities/loggers A–Z; short English; red/amber/green/neutral from saved findings. Desktop city grid vs stacked mobile cards. Historical data is never shown as live monitoring.
 - **Navigation:** `useState` switches Dashboard / Weekly Upload instead of React Router—less plumbing, but no deep links. Fridge Details open from a card and are not a third nav item.
 - **Weekly upload:** Select → Review → Resolve → Import. Needs Attention first; ready files collapsed; per-file corrections. Partial import keeps unresolved `File` objects in the tab so other files can still save.
