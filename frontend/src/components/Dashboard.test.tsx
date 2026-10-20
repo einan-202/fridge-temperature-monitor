@@ -125,17 +125,87 @@ describe("Dashboard", () => {
     expect(await screen.findByText(/7 Sep – 13 Sep 2026/)).toBeInTheDocument();
   });
 
-  it("shows a loading state then an error state", async () => {
+  it("shows a skeleton while the weekly report loads", async () => {
+    let resolveFetch: ((value: Response) => void) | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveFetch = resolve;
+          }),
+      ),
+    );
+    render(<Dashboard />);
+    expect(screen.getByTestId("dashboard-skeleton")).toBeInTheDocument();
+    expect(screen.getByText(/Loading weekly report/i)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText(/°C/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Fridge Temperature Monitor")).not.toBeInTheDocument();
+    resolveFetch!({
+      ok: true,
+      json: async () => sampleOverview(),
+    } as Response);
+    expect(await screen.findByText("Fridges with data")).toBeInTheDocument();
+    expect(screen.getByText("Fridge Temperature Monitor")).toBeInTheDocument();
+    expect(screen.queryByTestId("dashboard-skeleton")).not.toBeInTheDocument();
+  });
+
+  it("does not retry an application HTTP 500", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 500,
+      text: async () => '{"detail":"division by zero"}',
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Dashboard />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Could not load/);
+    expect(screen.getByText("division by zero")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("dashboard-skeleton")).not.toBeInTheDocument();
+  });
+
+  it("retries a temporary startup failure then shows the report", async () => {
+    let attempts = 0;
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => {
-        await new Promise((r) => setTimeout(r, 30));
-        return { ok: false, status: 500 } as Response;
+        attempts += 1;
+        if (attempts < 3) {
+          return {
+            ok: false,
+            status: 503,
+            text: async () => '{"detail":"database unreachable"}',
+          };
+        }
+        return { ok: true, json: async () => sampleOverview() };
       }),
     );
     render(<Dashboard />);
-    expect(screen.getByText(/Loading weekly report/i)).toBeInTheDocument();
-    expect(await screen.findByRole("alert")).toHaveTextContent(/Could not load/);
+    expect(screen.getByTestId("dashboard-skeleton")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Fridges with data", {}, { timeout: 4000 }),
+    ).toBeInTheDocument();
+    expect(attempts).toBe(3);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("stops retrying startup failures and keeps Try again", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 500,
+      text: async () => "Error: connect ECONNREFUSED 172.18.0.3:8000",
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Dashboard />);
+    expect(await screen.findByRole("alert", {}, { timeout: 5000 })).toHaveTextContent(
+      /Could not load/,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(screen.queryByTestId("dashboard-skeleton")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(screen.getByTestId("dashboard-skeleton")).toBeInTheDocument();
   });
 
   it("shows an empty state when the API returns no fridges", async () => {

@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { OverviewLoadError, OVERVIEW_RETRY_DELAYS_MS, sleep } from "../api/loadError";
 import { fetchOverview } from "../api/overview";
 import { summarizeFridges } from "../dashboard/findings";
 import { groupByCity } from "../dashboard/sort";
 import type { OverviewResponse } from "../types/overview";
+import { DashboardSkeleton } from "./DashboardSkeleton";
 import { FridgeCard } from "./FridgeCard";
 import { SummaryCounters } from "./SummaryCounters";
 import { WeekSelector } from "./WeekSelector";
@@ -15,22 +17,38 @@ type LoadState =
 export function Dashboard() {
   const [week, setWeek] = useState<string | null>(null);
   const [state, setState] = useState<LoadState>({ status: "loading" });
+  const requestId = useRef(0);
 
   const load = useCallback(async (selected: string | null) => {
+    const id = ++requestId.current;
     setState({ status: "loading" });
-    try {
-      const data = await fetchOverview(selected);
-      setState({ status: "ready", data });
-      if (data.week?.monday) {
-        setWeek(data.week.monday);
-      } else {
-        setWeek(null);
+    let lastMessage = "Could not load the weekly report";
+
+    for (let attempt = 0; attempt <= OVERVIEW_RETRY_DELAYS_MS.length; attempt += 1) {
+      try {
+        const data = await fetchOverview(selected);
+        if (id !== requestId.current) return;
+        setState({ status: "ready", data });
+        if (data.week?.monday) {
+          setWeek(data.week.monday);
+        } else {
+          setWeek(null);
+        }
+        return;
+      } catch (err) {
+        lastMessage =
+          err instanceof Error ? err.message : "Could not load the weekly report";
+        const retryable =
+          err instanceof OverviewLoadError ? err.retryable : true;
+        const hasRetry = attempt < OVERVIEW_RETRY_DELAYS_MS.length;
+        if (!retryable || !hasRetry) break;
+        await sleep(OVERVIEW_RETRY_DELAYS_MS[attempt]);
+        if (id !== requestId.current) return;
       }
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Could not load the weekly report";
-      setState({ status: "error", message });
     }
+
+    if (id !== requestId.current) return;
+    setState({ status: "error", message: lastMessage });
   }, []);
 
   useEffect(() => {
@@ -43,11 +61,20 @@ export function Dashboard() {
   };
 
   return (
-    <div className="dashboard">
+    <div className="dashboard" aria-busy={state.status === "loading"}>
       <header className="dashboard__header">
         <div className="dashboard__titles">
-          <h1 className="dashboard__title">Fridge Temperature Monitor</h1>
-          <p className="dashboard__subtitle">Weekly temperature report</p>
+          {state.status === "loading" ? (
+            <>
+              <div className="skeleton skeleton--title" />
+              <div className="skeleton skeleton--subtitle" />
+            </>
+          ) : (
+            <>
+              <h1 className="dashboard__title">Fridge Temperature Monitor</h1>
+              <p className="dashboard__subtitle">Weekly temperature report</p>
+            </>
+          )}
         </div>
         {state.status === "ready" && state.data.week ? (
           <WeekSelector
@@ -57,13 +84,18 @@ export function Dashboard() {
             weekEnd={state.data.week.end}
             onChange={onWeekChange}
           />
+        ) : state.status === "loading" ? (
+          <div className="skeleton skeleton--week" />
         ) : null}
       </header>
 
       {state.status === "loading" ? (
-        <p className="dashboard__status" role="status">
-          Loading weekly report…
-        </p>
+        <>
+          <p className="visually-hidden" role="status">
+            Loading weekly report…
+          </p>
+          <DashboardSkeleton />
+        </>
       ) : null}
 
       {state.status === "error" ? (

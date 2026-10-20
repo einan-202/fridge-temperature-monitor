@@ -28,6 +28,7 @@ from app.upload import (
     import_upload,
     parse_logger_units,
     parse_moves,
+    parse_new_fridges,
     parse_new_loggers,
     parse_selections,
     read_upload_bytes_async,
@@ -156,6 +157,7 @@ async def _upload_request(
     new_loggers: str,
     moves: str,
     logger_units: str,
+    new_fridges: str,
     session: Session,
     commit: bool,
 ) -> dict:
@@ -169,6 +171,7 @@ async def _upload_request(
             "new_loggers": parse_new_loggers(new_loggers),
             "moves": parse_moves(moves),
             "logger_units": parse_logger_units(logger_units),
+            "new_fridges": parse_new_fridges(new_fridges),
         }
         if commit:
             return import_upload(session, **kwargs)
@@ -188,6 +191,7 @@ async def uploads_review(
     new_loggers: Annotated[str, Form()] = "[]",
     moves: Annotated[str, Form()] = "[]",
     logger_units: Annotated[str, Form()] = "{}",
+    new_fridges: Annotated[str, Form()] = "[]",
     session: Session = Depends(get_db),
 ) -> dict:
     """Dry-run preview. Leaves the database unchanged."""
@@ -199,6 +203,7 @@ async def uploads_review(
         new_loggers=new_loggers,
         moves=moves,
         logger_units=logger_units,
+        new_fridges=new_fridges,
         session=session,
         commit=False,
     )
@@ -213,6 +218,7 @@ async def uploads_import(
     new_loggers: Annotated[str, Form()] = "[]",
     moves: Annotated[str, Form()] = "[]",
     logger_units: Annotated[str, Form()] = "{}",
+    new_fridges: Annotated[str, Form()] = "[]",
     session: Session = Depends(get_db),
 ) -> dict:
     """Import ready files. Historical is atomic; weekly commits per file."""
@@ -224,6 +230,7 @@ async def uploads_import(
         new_loggers=new_loggers,
         moves=moves,
         logger_units=logger_units,
+        new_fridges=new_fridges,
         session=session,
         commit=True,
     )

@@ -14,11 +14,18 @@ from app.upload import (
     HISTORICAL_LOGGER_UNITS,
     AssignmentInfo,
     StagedMove,
+    StagedNewFridge,
     StagedNewLogger,
     detect_logger_code,
+    extract_logger_code_from_filename,
+    mapping_mismatch_summary,
+    MappingMismatch,
+    summarize_logger_column,
     parse_effective_at,
+    parse_fridge_ref,
     parse_logger_units,
     parse_moves,
+    parse_new_fridges,
     parse_new_loggers,
     parse_selections,
     read_weekly_sheet,
@@ -91,6 +98,61 @@ def test_filename_unknown_code():
 
 def test_filename_never_guessed_from_empty_known_list():
     assert detect_logger_code("TL-0512.xlsx", []) is None
+
+
+def test_extract_logger_code_from_typical_weekly_filename():
+    name = "07_TL-0777_Haifa_NEW_Temp_Time.xlsx"
+    assert extract_logger_code_from_filename(name) == "TL-0777"
+    assert extract_logger_code_from_filename(name) != "07"
+    assert extract_logger_code_from_filename(name) != "TL"
+
+
+def test_extract_logger_code_normalizes_case():
+    assert extract_logger_code_from_filename("tl-0777_week.xlsx") == "TL-0777"
+
+
+def test_extract_logger_code_ambiguous_or_missing_is_none():
+    assert extract_logger_code_from_filename("TL-0777_TL-0417.xlsx") is None
+    assert extract_logger_code_from_filename("random_export.xlsx") is None
+    assert extract_logger_code_from_filename("07_Haifa_NEW.xlsx") is None
+
+
+def test_generic_filename_is_not_detected_as_known_logger():
+    codes = ["TL-0512", "TL-0417", "TL-0388", "TL-0231"]
+    name = "04_logger_in_column_generic_filename.xlsx"
+    assert extract_logger_code_from_filename(name) is None
+    assert detect_logger_code(name, codes) is None
+
+
+def test_summarize_logger_column_consistent_code():
+    rows = [
+        WeeklySheetRow(2, "2026-09-14 06:00", 4.0, logger_col="TL-0388"),
+        WeeklySheetRow(3, "2026-09-14 06:15", 4.1, logger_col="tl-0388"),
+        WeeklySheetRow(4, "2026-09-14 06:30", 4.0, logger_col="TL-0388"),
+    ]
+    summary, suggested = summarize_logger_column(rows)
+    assert suggested == "TL-0388"
+    assert summary == [{"code": "TL-0388", "count": 3}]
+
+
+def test_summarize_logger_column_mixed_codes_not_suggested():
+    rows = [
+        WeeklySheetRow(2, "2026-09-14 06:00", 4.0, logger_col="TL-0388"),
+        WeeklySheetRow(3, "2026-09-14 06:15", 4.1, logger_col="TL-0512"),
+    ]
+    summary, suggested = summarize_logger_column(rows)
+    assert suggested is None
+    assert {item["code"] for item in summary} == {"TL-0388", "TL-0512"}
+
+
+def test_mapping_mismatch_summary_collapses_repeated_logger_errors():
+    mismatches = [
+        MappingMismatch(i, "Logger", "TL-0388", "TL-0512", "row msg")
+        for i in range(2, 22)
+    ]
+    assert mapping_mismatch_summary(mismatches) == (
+        "20 rows contain TL-0388, but TL-0512 was selected."
+    )
 
 
 # ===========================================================================
@@ -298,6 +360,18 @@ def test_parse_selections_and_moves_and_new_loggers():
     assert new == [StagedNewLogger("TL-9", "C", 2)]
     assert parse_logger_units('{"TL-0777": "F"}') == {"TL-0777": "F"}
     assert parse_effective_at("2026-09-17T06:00:00") == datetime(2026, 9, 17, 6, 0)
+    assert parse_new_fridges('[{"branch": "Haifa", "name": "Walk-in 3"}]') == [
+        StagedNewFridge("Haifa", "Walk-in 3")
+    ]
+    assert parse_fridge_ref("new:0") == "new:0"
+    staged_move = parse_moves(
+        '[{"logger_id": 1, "fridge_id": "new:0", "effective_at": "2026-09-17 06:00"}]'
+    )
+    assert staged_move[0].fridge_id == "new:0"
+    staged_logger = parse_new_loggers(
+        '[{"code": "TL-9", "unit": "C", "fridge_id": "new:0"}]'
+    )
+    assert staged_logger[0].fridge_id == "new:0"
 
 
 def test_parse_logger_units_rejects_bad_unit():

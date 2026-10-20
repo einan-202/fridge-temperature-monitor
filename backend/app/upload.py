@@ -52,6 +52,10 @@ MAX_FILE_BYTES = 5 * 1024 * 1024  # 5 MB
 
 # Whole-token match: code bounded by non-alphanumeric (or string edges).
 _TOKEN_RE_TEMPLATE = r"(?<![A-Za-z0-9]){code}(?![A-Za-z0-9])"
+# Recognised weekly logger-code shape: TL- plus digits (e.g. TL-0777).
+_LOGGER_CODE_RE = re.compile(
+    r"(?<![A-Za-z0-9])(TL-\d+)(?![A-Za-z0-9])", re.IGNORECASE
+)
 
 
 class UploadError(ValueError):
@@ -102,16 +106,22 @@ class AssignmentInfo:
 
 
 @dataclass
+class StagedNewFridge:
+    branch: str
+    name: str
+
+
+@dataclass
 class StagedNewLogger:
     code: str
     unit: str
-    fridge_id: int
+    fridge_id: int | str  # existing id, or "new:<index>" into staged new_fridges
 
 
 @dataclass
 class StagedMove:
     logger_id: int
-    fridge_id: int
+    fridge_id: int | str  # existing id, or "new:<index>" into staged new_fridges
     effective_at: datetime
 
 
@@ -147,6 +157,8 @@ class FileResult:
     fridges_created: int = 0
     assignments_created: int = 0
     message: str | None = None
+    logger_column: list[dict] = field(default_factory=list)
+    suggested_logger_code: str | None = None
 
 
 @dataclass
@@ -159,6 +171,8 @@ class UploadOutcome:
     moves_rejected: list[dict] = field(default_factory=list)
     new_loggers_created: list[dict] = field(default_factory=list)
     new_loggers_rejected: list[dict] = field(default_factory=list)
+    new_fridges_created: list[dict] = field(default_factory=list)
+    new_fridges_rejected: list[dict] = field(default_factory=list)
     historical: dict | None = None
     message: str | None = None
     blocked: bool = False  # import refused entirely (e.g. unresolved Haifa units)
@@ -169,15 +183,46 @@ class UploadOutcome:
 # --------------------------------------------------------------------------
 
 
+def extract_logger_code_from_filename(filename: str) -> str | None:
+    """Return the single recognised logger code in the file stem, or None.
+
+    A recognised code is a whole token `TL-` plus digits (case-insensitive).
+    Zero or several distinct codes mean the name is unidentified — never use
+    the whole filename, a leading index like `07`, or `TL` alone.
+    """
+    stem = Path(filename).stem
+    seen: dict[str, str] = {}
+    for raw in _LOGGER_CODE_RE.findall(stem):
+        digits = raw.split("-", 1)[1]
+        normalised = f"TL-{digits}"
+        seen.setdefault(normalised.casefold(), normalised)
+    if len(seen) == 1:
+        return next(iter(seen.values()))
+    return None
+
+
 def detect_logger_code(filename: str, known_codes: Sequence[str]) -> str | None:
     """Return the single known logger code that matches as a whole token, or None.
 
     Matching is case-insensitive on the file stem. Zero or multiple matches
     mean the file is unidentified (never guessed from contents or the DB).
+
+    Recognised `TL-`+digits tokens are preferred so a name like
+    `04_logger_in_column_generic_filename.xlsx` is never assigned to an
+    unrelated known logger.
     """
+    extracted = extract_logger_code_from_filename(filename)
+    known_by_key = {name_key(code): code for code in known_codes}
+    if extracted is not None:
+        return known_by_key.get(name_key(extracted))
+
+    # Recognised TL- codes are handled above. Remaining known codes (if any)
+    # still match as whole tokens; they must not steal generic filenames.
     stem = Path(filename).stem
     matches: list[str] = []
     for code in known_codes:
+        if re.fullmatch(r"TL-\d+", code, flags=re.IGNORECASE):
+            continue
         pattern = re.compile(
             _TOKEN_RE_TEMPLATE.format(code=re.escape(code)), re.IGNORECASE
         )
@@ -610,6 +655,63 @@ def read_weekly_sheet(path: str | os.PathLike) -> list[WeeklySheetRow]:
     return rows
 
 
+def summarize_logger_column(
+    sheet_rows: Sequence[WeeklySheetRow],
+) -> tuple[list[dict], str | None]:
+    """Count distinct Logger-column values. Suggest only when exactly one code."""
+    counts: dict[str, int] = {}
+    display: dict[str, str] = {}
+    for row in sheet_rows:
+        if row.is_blank or row.logger_col is None or not str(row.logger_col).strip():
+            continue
+        found = normalize_name(row.logger_col)
+        if not found:
+            continue
+        key = name_key(found)
+        counts[key] = counts.get(key, 0) + 1
+        display.setdefault(key, found)
+    summary = [
+        {"code": display[key], "count": counts[key]}
+        for key in sorted(counts, key=lambda k: (-counts[k], display[k]))
+    ]
+    suggested = summary[0]["code"] if len(summary) == 1 else None
+    return summary, suggested
+
+
+def mapping_mismatch_summary(mismatches: Sequence[MappingMismatch]) -> str:
+    """Plain-English summary of repeated column mismatches."""
+    logger_mm = [m for m in mismatches if m.field == "Logger"]
+    if logger_mm:
+        groups: dict[tuple[str, str], int] = {}
+        for item in logger_mm:
+            key = (item.found, item.expected)
+            groups[key] = groups.get(key, 0) + 1
+        found, expected = next(iter(groups))
+        count = groups[(found, expected)]
+        if len(groups) == 1:
+            noun = "row" if count == 1 else "rows"
+            verb = "contains" if count == 1 else "contain"
+            return f"{count} {noun} {verb} {found}, but {expected} was selected."
+        parts = [
+            f"{n} row{'s' if n != 1 else ''} contain {found}"
+            for (found, _expected), n in groups.items()
+        ]
+        expected = logger_mm[0].expected
+        return f"{'; '.join(parts)}. Selected logger is {expected}."
+    return mismatches[0].message
+
+
+def attach_logger_column(result: FileResult, file: FileUpload) -> None:
+    """Fill logger-column hint without using it to resolve the file."""
+    try:
+        rows = read_weekly_sheet(file.path)
+    except IngestError:
+        return
+    summary, suggested = summarize_logger_column(rows)
+    result.logger_column = summary
+    result.suggested_logger_code = suggested
+
+
 def validate_optional_columns(
     sheet_rows: Sequence[WeeklySheetRow],
     logger_code: str,
@@ -688,8 +790,165 @@ def parse_effective_at(value: Any) -> datetime:
     raise UploadError(f"unrecognized move effective_at {value!r}")
 
 
+def _lookup_fridge(
+    session: Session,
+    fridge_ref: int | str,
+    fridge_by_index: Mapping[int, Fridge] | None = None,
+) -> tuple[Fridge | None, str | None]:
+    """Resolve an existing fridge id or a staged `new:<index>` reference."""
+    fridge_by_index = fridge_by_index or {}
+    if isinstance(fridge_ref, str) and fridge_ref.lower().startswith("new:"):
+        rest = fridge_ref.split(":", 1)[1]
+        try:
+            index = int(rest)
+        except ValueError:
+            return None, f"invalid new fridge reference {fridge_ref!r}"
+        fridge = fridge_by_index.get(index)
+        if fridge is None:
+            return None, f"staged fridge {fridge_ref} is not confirmed"
+        return fridge, None
+    try:
+        fridge_id = int(fridge_ref)
+    except (TypeError, ValueError):
+        return None, f"invalid fridge reference {fridge_ref!r}"
+    fridge = session.get(Fridge, fridge_id)
+    if fridge is None:
+        return None, f"fridge id {fridge_id} does not exist"
+    return fridge, None
+
+
+def apply_new_fridges(
+    session: Session, staged: Sequence[StagedNewFridge]
+) -> tuple[list[dict], list[dict], dict[int, Fridge]]:
+    """Create staged fridges in existing cities. Repeated identical names reuse the row."""
+    created: list[dict] = []
+    rejected: list[dict] = []
+    by_index: dict[int, Fridge] = {}
+    batch_seen: dict[tuple[str, str], Fridge] = {}
+
+    for index, item in enumerate(staged):
+        branch = normalize_name(item.branch)
+        name = normalize_name(item.name)
+        if not branch or not name:
+            rejected.append(
+                {
+                    "index": index,
+                    "branch": item.branch,
+                    "name": item.name,
+                    "reason": "city and fridge name are required",
+                }
+            )
+            continue
+        identity = (name_key(branch), name_key(name))
+        if identity in batch_seen:
+            fridge = batch_seen[identity]
+            by_index[index] = fridge
+            created.append(
+                {
+                    "index": index,
+                    "id": fridge.id,
+                    "branch": fridge.branch_name,
+                    "name": fridge.name,
+                    "status": "already_present",
+                }
+            )
+            continue
+
+        known_branch = session.scalars(
+            select(Fridge.branch_name)
+            .where(func.lower(Fridge.branch_name) == name_key(branch))
+            .order_by(Fridge.id)
+        ).first()
+        if known_branch is None:
+            rejected.append(
+                {
+                    "index": index,
+                    "branch": branch,
+                    "name": name,
+                    "reason": "city is not in the list; pick an existing city",
+                }
+            )
+            continue
+
+        existing = session.scalars(
+            select(Fridge)
+            .where(
+                func.lower(Fridge.branch_name) == name_key(branch),
+                func.lower(Fridge.name) == name_key(name),
+            )
+            .order_by(Fridge.id)
+        ).first()
+        if existing is not None:
+            batch_seen[identity] = existing
+            by_index[index] = existing
+            created.append(
+                {
+                    "index": index,
+                    "id": existing.id,
+                    "branch": existing.branch_name,
+                    "name": existing.name,
+                    "status": "already_present",
+                }
+            )
+            continue
+
+        fridge = Fridge(branch_name=known_branch, name=name)
+        nested = session.begin_nested()
+        try:
+            session.add(fridge)
+            session.flush()
+            nested.commit()
+        except IntegrityError:
+            nested.rollback()
+            existing = session.scalars(
+                select(Fridge)
+                .where(
+                    func.lower(Fridge.branch_name) == name_key(branch),
+                    func.lower(Fridge.name) == name_key(name),
+                )
+                .order_by(Fridge.id)
+            ).first()
+            if existing is None:
+                rejected.append(
+                    {
+                        "index": index,
+                        "branch": branch,
+                        "name": name,
+                        "reason": "could not create fridge",
+                    }
+                )
+                continue
+            batch_seen[identity] = existing
+            by_index[index] = existing
+            created.append(
+                {
+                    "index": index,
+                    "id": existing.id,
+                    "branch": existing.branch_name,
+                    "name": existing.name,
+                    "status": "already_present",
+                }
+            )
+            continue
+
+        batch_seen[identity] = fridge
+        by_index[index] = fridge
+        created.append(
+            {
+                "index": index,
+                "id": fridge.id,
+                "branch": fridge.branch_name,
+                "name": fridge.name,
+                "status": "created",
+            }
+        )
+    return created, rejected, by_index
+
+
 def apply_new_loggers(
-    session: Session, staged: Sequence[StagedNewLogger]
+    session: Session,
+    staged: Sequence[StagedNewLogger],
+    fridge_by_index: Mapping[int, Fridge] | None = None,
 ) -> tuple[list[dict], list[dict], dict[str, Logger]]:
     """Create staged new loggers + undated assignments. Returns created, rejected, by_code."""
     created: list[dict] = []
@@ -716,9 +975,9 @@ def apply_new_loggers(
                 }
             )
             continue
-        fridge = session.get(Fridge, item.fridge_id)
+        fridge, fridge_err = _lookup_fridge(session, item.fridge_id, fridge_by_index)
         if fridge is None:
-            rejected.append({"code": code, "reason": f"fridge id {item.fridge_id} does not exist"})
+            rejected.append({"code": code, "reason": fridge_err})
             continue
 
         logger = Logger(code=code, unit=item.unit)
@@ -748,7 +1007,9 @@ def apply_new_loggers(
 
 
 def apply_moves(
-    session: Session, moves: Sequence[StagedMove]
+    session: Session,
+    moves: Sequence[StagedMove],
+    fridge_by_index: Mapping[int, Fridge] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Insert dated assignments. Repeated identical moves are harmless."""
     applied: list[dict] = []
@@ -763,19 +1024,19 @@ def apply_moves(
                 {"logger_id": move.logger_id, "reason": f"logger id {move.logger_id} does not exist"}
             )
             continue
-        fridge = session.get(Fridge, move.fridge_id)
+        fridge, fridge_err = _lookup_fridge(session, move.fridge_id, fridge_by_index)
         if fridge is None:
             rejected.append(
                 {
                     "logger_id": move.logger_id,
                     "fridge_id": move.fridge_id,
-                    "reason": f"fridge id {move.fridge_id} does not exist",
+                    "reason": fridge_err,
                 }
             )
             continue
 
         key = (move.logger_id, move.effective_at)
-        if key in seen and seen[key] != move.fridge_id:
+        if key in seen and seen[key] != fridge.id:
             rejected.append(
                 {
                     "logger_id": move.logger_id,
@@ -785,7 +1046,7 @@ def apply_moves(
                 }
             )
             continue
-        seen[key] = move.fridge_id
+        seen[key] = fridge.id
 
         existing = session.scalars(
             select(LoggerAssignment).where(
@@ -793,13 +1054,13 @@ def apply_moves(
                 LoggerAssignment.assigned_from == move.effective_at,
             )
         ).all()
-        same = [a for a in existing if a.fridge_id == move.fridge_id]
-        other = [a for a in existing if a.fridge_id != move.fridge_id]
+        same = [a for a in existing if a.fridge_id == fridge.id]
+        other = [a for a in existing if a.fridge_id != fridge.id]
         if other:
             rejected.append(
                 {
                     "logger_id": move.logger_id,
-                    "fridge_id": move.fridge_id,
+                    "fridge_id": fridge.id,
                     "effective_at": move.effective_at.isoformat(sep=" "),
                     "reason": "conflicting move: another fridge already has this effective time",
                 }
@@ -809,7 +1070,7 @@ def apply_moves(
             applied.append(
                 {
                     "logger_id": move.logger_id,
-                    "fridge_id": move.fridge_id,
+                    "fridge_id": fridge.id,
                     "effective_at": move.effective_at.isoformat(sep=" "),
                     "status": "already_present",
                 }
@@ -821,7 +1082,7 @@ def apply_moves(
             session.add(
                 LoggerAssignment(
                     logger_id=move.logger_id,
-                    fridge_id=move.fridge_id,
+                    fridge_id=fridge.id,
                     assigned_from=move.effective_at,
                     assigned_to=None,
                 )
@@ -833,7 +1094,7 @@ def apply_moves(
             applied.append(
                 {
                     "logger_id": move.logger_id,
-                    "fridge_id": move.fridge_id,
+                    "fridge_id": fridge.id,
                     "effective_at": move.effective_at.isoformat(sep=" "),
                     "status": "already_present",
                 }
@@ -842,7 +1103,7 @@ def apply_moves(
         applied.append(
             {
                 "logger_id": move.logger_id,
-                "fridge_id": move.fridge_id,
+                "fridge_id": fridge.id,
                 "effective_at": move.effective_at.isoformat(sep=" "),
                 "status": "created",
             }
@@ -933,6 +1194,8 @@ def file_result_to_dict(result: FileResult) -> dict:
         "fridges_created": result.fridges_created,
         "assignments_created": result.assignments_created,
         "message": result.message,
+        "logger_column": result.logger_column,
+        "suggested_logger_code": result.suggested_logger_code,
     }
 
 
@@ -945,6 +1208,8 @@ def outcome_to_dict(outcome: UploadOutcome) -> dict:
         "moves_rejected": outcome.moves_rejected,
         "new_loggers_created": outcome.new_loggers_created,
         "new_loggers_rejected": outcome.new_loggers_rejected,
+        "new_fridges_created": outcome.new_fridges_created,
+        "new_fridges_rejected": outcome.new_fridges_rejected,
         "blocked": outcome.blocked,
         "message": outcome.message,
     }
@@ -1219,6 +1484,10 @@ def process_weekly_file(
         # Do not ingest anything from an unresolved file.
         return result
 
+    column_summary, column_suggested = summarize_logger_column(sheet_rows)
+    result.logger_column = column_summary
+    result.suggested_logger_code = column_suggested
+
     mismatches = validate_optional_columns(sheet_rows, logger.code, resolved_for_row)
     if mismatches:
         result.status = "needs_attention"
@@ -1232,7 +1501,7 @@ def process_weekly_file(
             }
             for m in mismatches
         ]
-        result.message = mismatches[0].message
+        result.message = mapping_mismatch_summary(mismatches)
         result.fridges = list(fridges_used.values())
         return result
 
@@ -1267,21 +1536,30 @@ def process_weekly(
     moves: Sequence[StagedMove],
     *,
     commit: bool,
+    new_fridges: Sequence[StagedNewFridge] | None = None,
 ) -> UploadOutcome:
     outcome = UploadOutcome(mode="weekly", dry_run=not commit)
 
     if len(files) > MAX_FILES:
         raise UploadError(f"at most {MAX_FILES} files allowed per batch")
 
-    # Apply staged new loggers and moves first (persisted on import even if
-    # no file imports). On review they are applied inside the rolled-back txn.
-    created, rejected_nl, new_by_code = apply_new_loggers(session, new_loggers)
+    # Apply staged fridges, then new loggers and moves first (persisted on
+    # import even if no file imports). On review they run inside the rollback.
+    created_f, rejected_f, fridge_by_index = apply_new_fridges(
+        session, new_fridges or []
+    )
+    outcome.new_fridges_created = created_f
+    outcome.new_fridges_rejected = rejected_f
+
+    created, rejected_nl, new_by_code = apply_new_loggers(
+        session, new_loggers, fridge_by_index
+    )
     outcome.new_loggers_created = created
     outcome.new_loggers_rejected = rejected_nl
 
     # If import and any staged new logger was rejected while referenced, files
     # that need it stay needs_attention.
-    applied_moves, rejected_moves = apply_moves(session, moves)
+    applied_moves, rejected_moves = apply_moves(session, moves, fridge_by_index)
     outcome.moves_applied = applied_moves
     outcome.moves_rejected = rejected_moves
 
@@ -1329,15 +1607,28 @@ def process_weekly(
             status = "needs_attention"
             if err and "invalid" in err:
                 status = "invalid"
-            outcome.files.append(
-                FileResult(
-                    status=status,
-                    file_index=file.index,
-                    filename=file.filename,
-                    logger_source=source,
-                    message=err,
-                )
+            unidentified = FileResult(
+                status=status,
+                file_index=file.index,
+                filename=file.filename,
+                logger_source=source,
+                message=err,
             )
+            attach_logger_column(unidentified, file)
+            if unidentified.suggested_logger_code and status == "needs_attention":
+                unidentified.message = (
+                    f"{err}. The Logger column consistently contains "
+                    f"{unidentified.suggested_logger_code}."
+                )
+            elif len(unidentified.logger_column) > 1:
+                codes = ", ".join(
+                    f"{item['code']} ({item['count']})"
+                    for item in unidentified.logger_column
+                )
+                unidentified.message = (
+                    f"{err}. The Logger column has mixed codes: {codes}."
+                )
+            outcome.files.append(unidentified)
             continue
 
         # Snapshot so a non-imported file does not poison later fridge-conflict checks.
@@ -1406,6 +1697,42 @@ def parse_json_field(raw: str | None, default: Any) -> Any:
         raise UploadError(f"invalid JSON: {exc}") from None
 
 
+def parse_fridge_ref(value: Any) -> int | str:
+    """Existing fridge id, or staged fridge `new:<index>`."""
+    if isinstance(value, bool):
+        raise UploadError("fridge_id must be an integer or new:<index>")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if text.lower().startswith("new:"):
+            rest = text.split(":", 1)[1]
+            try:
+                index = int(rest)
+            except ValueError as exc:
+                raise UploadError("new fridge reference must be new:<index>") from exc
+            return f"new:{index}"
+        try:
+            return int(text)
+        except ValueError as exc:
+            raise UploadError("fridge_id must be an integer or new:<index>") from exc
+    raise UploadError("fridge_id must be an integer or new:<index>")
+
+
+def parse_new_fridges(raw: Any) -> list[StagedNewFridge]:
+    data = raw if not isinstance(raw, str) else parse_json_field(raw, [])
+    if not isinstance(data, list):
+        raise UploadError("new_fridges must be a JSON list")
+    out: list[StagedNewFridge] = []
+    for item in data:
+        if not isinstance(item, dict):
+            raise UploadError("each new_fridge must be an object")
+        if "branch" not in item or "name" not in item:
+            raise UploadError("new_fridge requires branch and name")
+        out.append(StagedNewFridge(branch=str(item["branch"]), name=str(item["name"])))
+    return out
+
+
 def parse_new_loggers(raw: Any) -> list[StagedNewLogger]:
     data = raw if not isinstance(raw, str) else parse_json_field(raw, [])
     if not isinstance(data, list):
@@ -1416,12 +1743,12 @@ def parse_new_loggers(raw: Any) -> list[StagedNewLogger]:
             raise UploadError("each new_logger must be an object")
         if "code" not in item or "unit" not in item or "fridge_id" not in item:
             raise UploadError("new_logger requires code, unit and fridge_id")
-        try:
-            fridge_id = int(item["fridge_id"])
-        except (TypeError, ValueError) as exc:
-            raise UploadError("new_logger fridge_id must be an integer") from exc
         out.append(
-            StagedNewLogger(code=str(item["code"]), unit=str(item["unit"]), fridge_id=fridge_id)
+            StagedNewLogger(
+                code=str(item["code"]),
+                unit=str(item["unit"]),
+                fridge_id=parse_fridge_ref(item["fridge_id"]),
+            )
         )
     return out
 
@@ -1436,15 +1763,14 @@ def parse_moves(raw: Any) -> list[StagedMove]:
             raise UploadError("each move must be an object")
         try:
             logger_id = int(item["logger_id"])
-            fridge_id = int(item["fridge_id"])
         except (KeyError, TypeError, ValueError) as exc:
             raise UploadError("move requires logger_id, fridge_id, effective_at") from exc
-        if "effective_at" not in item:
-            raise UploadError("move requires effective_at")
+        if "fridge_id" not in item or "effective_at" not in item:
+            raise UploadError("move requires logger_id, fridge_id, effective_at")
         out.append(
             StagedMove(
                 logger_id=logger_id,
-                fridge_id=fridge_id,
+                fridge_id=parse_fridge_ref(item["fridge_id"]),
                 effective_at=parse_effective_at(item["effective_at"]),
             )
         )
@@ -1520,6 +1846,7 @@ def run_upload(
     new_loggers: Sequence[StagedNewLogger] | None = None,
     moves: Sequence[StagedMove] | None = None,
     logger_units: Mapping[str, str] | None = None,
+    new_fridges: Sequence[StagedNewFridge] | None = None,
     commit: bool,
 ) -> UploadOutcome:
     mode = (mode or "weekly").strip().lower()
@@ -1540,6 +1867,7 @@ def run_upload(
         new_loggers or [],
         moves or [],
         commit=commit,
+        new_fridges=new_fridges or [],
     )
 
 

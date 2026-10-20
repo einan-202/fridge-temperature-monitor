@@ -699,6 +699,80 @@ def test_weekly_column_validation(api_client, sample_path):
     assert by_name["TL-0512_bare.xlsx"]["status"] == "imported"
 
 
+def test_weekly_generic_filename_suggests_consistent_logger_column(api_client, sample_path):
+    client, session = api_client
+    _seed(session, sample_path)
+    logger_0388 = session.scalars(select(Logger).where(Logger.code == "TL-0388")).one()
+    rows = [["TL-0388", "2026-09-14 12:00", 4.0] for _ in range(5)]
+    content = make_xlsx_bytes(["Logger", "Time", "Temp"], rows)
+    review = _post(
+        client,
+        "/api/uploads/review",
+        mode="weekly",
+        files=[("04_logger_in_column_generic_filename.xlsx", content)],
+    ).json()
+    file_result = review["files"][0]
+    assert file_result["logger"] is None
+    assert file_result["status"] == "needs_attention"
+    assert file_result["suggested_logger_code"] == "TL-0388"
+    assert file_result["logger_column"] == [{"code": "TL-0388", "count": 5}]
+    assert "TL-0388" in (file_result["message"] or "")
+    assert file_result["mapping_mismatches"] == []
+
+    confirmed = _post(
+        client,
+        "/api/uploads/review",
+        mode="weekly",
+        files=[("04_logger_in_column_generic_filename.xlsx", content)],
+        selections={"0": logger_0388.id},
+    ).json()
+    assert confirmed["files"][0]["status"] == "ready"
+    assert confirmed["files"][0]["logger"]["code"] == "TL-0388"
+
+
+def test_weekly_explicit_selection_conflicts_with_logger_column(api_client, sample_path):
+    client, session = api_client
+    _seed(session, sample_path)
+    wrong = session.scalars(select(Logger).where(Logger.code == "TL-0512")).one()
+    rows = [["TL-0388", "2026-09-14 12:00", 4.0] for _ in range(20)]
+    content = make_xlsx_bytes(["Logger", "Time", "Temp"], rows)
+    body = _post(
+        client,
+        "/api/uploads/review",
+        mode="weekly",
+        files=[("04_logger_in_column_generic_filename.xlsx", content)],
+        selections={"0": wrong.id},
+    ).json()
+    file_result = body["files"][0]
+    assert file_result["status"] == "needs_attention"
+    assert file_result["logger"]["code"] == "TL-0512"
+    assert file_result["suggested_logger_code"] == "TL-0388"
+    assert "20 rows contain TL-0388, but TL-0512 was selected." in file_result["message"]
+    assert len(file_result["mapping_mismatches"]) == 20
+
+
+def test_weekly_mixed_logger_column_is_not_suggested(api_client, sample_path):
+    client, session = api_client
+    _seed(session, sample_path)
+    content = make_xlsx_bytes(
+        ["Logger", "Time", "Temp"],
+        [
+            ["TL-0388", "2026-09-14 12:00", 4.0],
+            ["TL-0512", "2026-09-14 12:15", 4.1],
+        ],
+    )
+    body = _post(
+        client,
+        "/api/uploads/review",
+        mode="weekly",
+        files=[("mixed_loggers.xlsx", content)],
+    ).json()
+    file_result = body["files"][0]
+    assert file_result["suggested_logger_code"] is None
+    assert {item["code"] for item in file_result["logger_column"]} == {"TL-0388", "TL-0512"}
+    assert "mixed codes" in (file_result["message"] or "")
+
+
 def test_weekly_fridge_conflict_against_database(api_client, sample_path):
     client, session = api_client
     _seed(session, sample_path)
@@ -819,6 +893,175 @@ def test_only_four_application_tables(api_client, sample_path):
     content = make_xlsx_bytes(["Time", "Temp"], [["2026-09-14 14:00", 4.0]])
     _post(client, "/api/uploads/import", mode="weekly", files=[("TL-0512.xlsx", content)])
     assert application_tables(session) == set(TABLES)
+
+
+def _fridge_named(session, branch, name):
+    return session.scalars(
+        select(Fridge).where(Fridge.branch_name == branch, Fridge.name == name)
+    ).first()
+
+
+def test_review_new_fridge_writes_nothing(api_client, sample_path):
+    client, session = api_client
+    _seed(session, sample_path)
+    before = counts(session)
+    content = make_xlsx_bytes(["Time", "Temp"], [["2026-09-14 07:00", 4.2]])
+    response = _post(
+        client,
+        "/api/uploads/review",
+        mode="weekly",
+        files=[("07_TL-0777_Haifa_NEW_Temp_Time.xlsx", content)],
+        selections={"0": "new:TL-0777"},
+        new_fridges=[{"branch": "Haifa", "name": "Walk-in 3"}],
+        new_loggers=[{"code": "TL-0777", "unit": "C", "fridge_id": "new:0"}],
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["dry_run"] is True
+    assert any(f["status"] == "created" for f in body["new_fridges_created"])
+    assert counts(session) == before
+    assert _fridge_named(session, "Haifa", "Walk-in 3") is None
+    assert session.scalars(select(Logger).where(Logger.code == "TL-0777")).first() is None
+
+
+def test_import_new_logger_assigned_to_new_fridge(api_client, sample_path):
+    client, session = api_client
+    _seed(session, sample_path)
+    before_fridges = counts(session)["fridges"]
+    content = make_xlsx_bytes(["Time", "Temp"], [["2026-09-14 07:00", 4.2]])
+    body = _post(
+        client,
+        "/api/uploads/import",
+        mode="weekly",
+        files=[("07_TL-0777_Haifa_NEW_Temp_Time.xlsx", content)],
+        selections={"0": "new:TL-0777"},
+        new_fridges=[{"branch": "Haifa", "name": "Walk-in 3"}],
+        new_loggers=[{"code": "TL-0777", "unit": "C", "fridge_id": "new:0"}],
+    ).json()
+    assert body["files"][0]["status"] == "imported"
+    assert body["files"][0]["inserted"] == 1
+    session.expire_all()
+    fridge = _fridge_named(session, "Haifa", "Walk-in 3")
+    logger = session.scalars(select(Logger).where(Logger.code == "TL-0777")).one()
+    assert fridge is not None
+    assert counts(session)["fridges"] == before_fridges + 1
+    assignment = session.scalars(
+        select(LoggerAssignment).where(LoggerAssignment.logger_id == logger.id)
+    ).one()
+    assert assignment.fridge_id == fridge.id
+    assert assignment.assigned_from is None
+    reading = session.scalars(
+        select(TemperatureReading).where(TemperatureReading.logger_id == logger.id)
+    ).one()
+    assert reading.fridge_id == fridge.id
+
+
+def test_import_existing_logger_moved_to_new_fridge_keeps_history(api_client, sample_path):
+    client, session = api_client
+    _seed(session, sample_path)
+    logger = session.scalars(select(Logger).where(Logger.code == "TL-0512")).one()
+    old_assignments = session.scalars(
+        select(LoggerAssignment).where(LoggerAssignment.logger_id == logger.id)
+    ).all()
+    assert old_assignments
+    old_ids = {a.id for a in old_assignments}
+    old_pairs = {(a.fridge_id, a.assigned_from) for a in old_assignments}
+    before_fridges = counts(session)["fridges"]
+    content = make_xlsx_bytes(["Time", "Temp"], [["2026-09-14 07:00", 4.2]])
+    body = _post(
+        client,
+        "/api/uploads/import",
+        mode="weekly",
+        files=[("TL-0512_week.xlsx", content)],
+        selections={"0": logger.id},
+        new_fridges=[{"branch": "Jerusalem", "name": "Overflow"}],
+        moves=[
+            {
+                "logger_id": logger.id,
+                "fridge_id": "new:0",
+                "effective_at": "2026-09-01 06:00",
+            }
+        ],
+    ).json()
+    assert body["files"][0]["status"] == "imported"
+    session.expire_all()
+    fridge = _fridge_named(session, "Jerusalem", "Overflow")
+    assert fridge is not None
+    assert counts(session)["fridges"] == before_fridges + 1
+    current = session.scalars(
+        select(LoggerAssignment).where(LoggerAssignment.logger_id == logger.id)
+    ).all()
+    assert old_ids <= {a.id for a in current}
+    assert old_pairs <= {(a.fridge_id, a.assigned_from) for a in current}
+    dated = [a for a in current if a.assigned_from == datetime(2026, 9, 1, 6, 0)]
+    assert len(dated) == 1 and dated[0].fridge_id == fridge.id
+    reading = session.scalars(
+        select(TemperatureReading).where(
+            TemperatureReading.logger_id == logger.id,
+            TemperatureReading.measured_at == datetime(2026, 9, 14, 7, 0),
+        )
+    ).one()
+    assert reading.fridge_id == fridge.id
+
+
+def test_repeated_import_does_not_duplicate_fridge(api_client, sample_path):
+    client, session = api_client
+    _seed(session, sample_path)
+    content = make_xlsx_bytes(["Time", "Temp"], [["2026-09-14 07:00", 4.2]])
+    payload = dict(
+        mode="weekly",
+        files=[("07_TL-0777_Haifa_NEW_Temp_Time.xlsx", content)],
+        selections={"0": "new:TL-0777"},
+        new_fridges=[{"branch": "Haifa", "name": "Walk-in 3"}],
+        new_loggers=[{"code": "TL-0777", "unit": "C", "fridge_id": "new:0"}],
+    )
+    first = _post(client, "/api/uploads/import", **payload).json()
+    assert first["files"][0]["status"] == "imported"
+    session.expire_all()
+    fridge_count = counts(session)["fridges"]
+    logger = session.scalars(select(Logger).where(Logger.code == "TL-0777")).one()
+    second = _post(
+        client,
+        "/api/uploads/import",
+        mode="weekly",
+        files=[("TL-0777_again.xlsx", content)],
+        selections={"0": logger.id},
+        new_fridges=[{"branch": "Haifa", "name": "Walk-in 3"}],
+    ).json()
+    assert any(f["status"] == "already_present" for f in second["new_fridges_created"])
+    session.expire_all()
+    assert counts(session)["fridges"] == fridge_count
+    assert (
+        session.scalar(
+            select(func.count())
+            .select_from(Fridge)
+            .where(Fridge.branch_name == "Haifa", Fridge.name == "Walk-in 3")
+        )
+        == 1
+    )
+
+
+def test_new_fridge_duplicate_of_existing_is_reused(api_client, sample_path):
+    client, session = api_client
+    _seed(session, sample_path)
+    existing = session.scalars(
+        select(Fridge).where(Fridge.branch_name == "Haifa")
+    ).first()
+    before = counts(session)["fridges"]
+    content = make_xlsx_bytes(["Time", "Temp"], [["2026-09-14 07:00", 4.2]])
+    body = _post(
+        client,
+        "/api/uploads/import",
+        mode="weekly",
+        files=[("new_logger.xlsx", content)],
+        selections={"0": "new:TL-9009"},
+        new_fridges=[{"branch": existing.branch_name, "name": existing.name.lower()}],
+        new_loggers=[{"code": "TL-9009", "unit": "C", "fridge_id": "new:0"}],
+    ).json()
+    assert body["files"][0]["status"] == "imported"
+    assert body["new_fridges_created"][0]["status"] == "already_present"
+    session.expire_all()
+    assert counts(session)["fridges"] == before
 
 
 def test_filename_does_not_create_logger_from_guess(api_client, sample_path):
