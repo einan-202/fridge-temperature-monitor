@@ -2,11 +2,34 @@
 
 ## 1. Time spent
 
-*To be filled in: [hours].*
+Approximately 11 hours so far, including planning, implementation, testing, debugging, and documentation.
 
 ## 2. Key decisions and trade-offs
 
-**Implemented:** schema, migration, normalization, ingestion and a seed of the 16 sample rows.
+**Implemented through Phase 3.3A:** four-table schema and migration; normalization and ingestion; sample seed; weekly retrospective analysis and read APIs; historical/weekly upload APIs; weekly fridge dashboard UI.
+
+**Why these choices (brief):**
+
+- **Weekly retrospective analysis** matches Summer’s weekly upload workflow and avoids misleading real-time status claims.
+- **Historical imports are atomic** so a failed first load cannot leave a half-built initial dataset.
+- **Weekly imports commit per valid file** so one problematic logger does not block other branches.
+- **Unknown logger move dates are not invented** because that could attach readings to the wrong fridge.
+
+**Haifa temperature units (per logger, not per branch):**
+
+- Summer refers to “the old logger in Haifa” (singular), not every Haifa logger.
+- The sample identifies **TL-0231** with values 38.3 and 39.0, which only make sense as Fahrenheit; `HISTORICAL_LOGGER_UNITS` / seed both set TL-0231 to `F`.
+- Units are configured **per logger**: TL-0231 is predefined as Fahrenheit; other Haifa loggers are **not** assumed Fahrenheit. A new Haifa logger other than TL-0231 stays unresolved until `logger_units` supplies an explicit `C` or `F` (import is blocked until then). Non-Haifa new loggers default to Celsius.
+- **Ambiguity:** Summer’s combined historical Excel may already contain Celsius values. Treating those as Fahrenheit would convert again and store wrong °C.
+- **Current behaviour:** conversion always follows the logger’s stored unit (`to_celsius(..., logger.unit)`). There is no separate “already converted / skip conversion” flag. For a *new* logger, `logger_units` can override the unit on first import (including setting TL-0231 to `C` if the sheet is already Celsius). An *existing* logger’s unit is never changed on re-import. Units are never inferred from temperature magnitudes.
+
+**Supporting future changes:**
+
+- **Implemented:** units are per logger (not per city), so devices may use different scales; dated moves preserve the correct fridge for historical readings; Unknown move dates are not invented; unknown Haifa logger units require confirmation, while new non-Haifa loggers default to Celsius.
+- **Limitation (unresolved):** a combined historical sheet may already hold Celsius values from a Fahrenheit logger. The system has only one stored unit per logger—no separate source unit per import. Setting that unit to `C` for a converted sheet would skip conversion correctly for that file, but later original Fahrenheit files for the same logger would then be stored without conversion (wrong °C).
+- **Future improvement (not built):** separate the logger’s native unit from each import’s source unit so historical and weekly uploads can both convert correctly.
+
+**Phase 2 (ingestion):**
 
 - Each reading keeps its own `fridge_id`. Unknown assignment dates stay NULL and are never invented (TL-0417 moved, but nothing says when).
 - `Decimal` parsing. `ERR`/blank/NaN become NULL with the raw text kept. No thresholds: 150 is stored as given.
@@ -15,34 +38,22 @@
 - Commits live in the caller, not in the ingestion service.
 - TL-0231 is Fahrenheit per the assignment data (its sample values 38.3 and 39 agree); the file has no unit column.
 
-**Planned, not built yet: two workflows** (`docs/cursor/plan-phase-3.md`). Development and demos keep using `seed.py` with the 16-row sample. Summer's real use has two separate screens in the web UI, with no file paths:
-- **Initial Setup / Historical Import (one time):** her combined file (Logger, Branch, Fridge, Time, Temp; about 3,000 rows) goes through the same ingestion. The file has no unit column, so predefined units are applied where there is evidence: TL-0231 is Fahrenheit, and a new logger outside Haifa defaults to Celsius, both shown in the preview and overridable. **A new Haifa logger other than TL-0231 is not defaulted to Celsius** (Haifa is the one branch known to have a Fahrenheit logger), so Summer makes a one-time required C/F choice for it; the unit is then stored and never asked again. Units are never inferred from temperature values. No move dates are invented, and importing again adds nothing.
-- **Weekly Upload:** new files that may hold only `Time` and `Temp`, using the mappings and units already in the database, so the combined file is never needed again. A genuinely new logger is registered in the review (typed code, confirmed unit, existing fridge) and saved only at Import. The Celsius default is not applied to it.
+**Phase 3 analysis (backend):** weekly retrospective, not real time. Excursions strictly above 5 °C stay visible after recovery. An `ERR` ends a run like a gap. Coverage is an estimate from sample intervals; unobserved time is never called safe. `end_of_data` vs `end_of_period` are distinct. Provisional constants: Monday week start, `MIN_COVERAGE=0.90`.
 
-*Why:* a one-time bootstrap and a recurring upload have different inputs and risks, and one shared ingestion keeps both simple. *Trade-off:* a logger seen under several fridges in the history has several undated assignments, so Summer records its moves (fridge, date and time) before its weekly files import. Misspelled names or units that were imported cannot be edited in the MVP.
+**Phase 3.2 upload APIs** (`POST /api/uploads/review`, `/import`): same Phase 2 ingestion; review is a dry run (rolled back); historical import is atomic; weekly import commits per ready file. Filename logger detection, per-reading fridge resolution, staged moves and new loggers, fridge-conflict pre-check, Haifa unit confirmation for unknown historical loggers. No React upload screens yet.
 
-**Planned fixes for gaps found in Phase 2 and the analysis rules (Phase 2 is unchanged):**
-- The same logger and time under a different fridge with an identical value is a silent duplicate in Phase 2. Phase 3 checks the fridge before ingesting and reports it as a conflict.
-- An `ERR` reading ends an excursion or warming run like a gap, so it never joins two runs.
-- **Weekly retrospective, not real time.** Summer uploads weekly and asks what happened to each fridge during the reporting week, so the dashboard opens on the latest week with readings (with a week selector) and analyses every reading in it. There is one card per fridge, while analysis stays per logger and fridge series. Every excursion stays visible after recovery, with the maximum temperature, spikes, warming, invalid readings and gaps. "No excursion observed" is reported only when at least 90% of the week was observed; otherwise the card says "insufficient data", and unobserved time is never called safe. There is no live status, freshness limit or clock input. The 90% figure and the Monday week start are **provisional business assumptions**, not derived facts (see questions below), and "observed" only means "a reading exists nearby", not "confirmed safe for every second in between".
-- A run still open at a series' last reading is `end_of_data` only when nothing was recorded after it anywhere in the database; if a later reading exists outside the analysed week it is `end_of_period` instead. The two are never guessed as each other.
-- Optional `Logger`, `Branch` and `Fridge` columns in weekly files are checked against the resolved mapping and never used to identify a file.
+**Phase 3.3A dashboard UX:**
 
-**Planned weekly upload.** Summer gets dozens of logger files a week, possibly with only `Time` and `Temp`. Per-file confirmation would become rubber-stamping, and 12 branch folders don't say which logger or fridge a file belongs to. Instead:
+- Fridge-first weekly report from `GET /api/overview` only (no `/api/series` in this phase).
+- Cards grouped by city (A–Z); within a city, numeric logger code then fridge name. One card per fridge; multiple loggers listed on the card.
+- Findings derived from overview counts/classifications only (sustained → red, recovered spike → green, invalid/gap → amber, insufficient → neutral). No temperature analysis in React.
+- Desktop: city groups in a multi-column grid; multi-fridge cities span two columns; outer card heights equalized across cities in a row via the parent stretch chain; findings sit near the bottom with natural (not forced) status-box height.
+- Mobile: compact three-counter row with short labels; full-width cards; natural heights; explicit typography scale; `text-size-adjust: 100%`.
+- Cards are not clickable yet (detail view is planned later).
 
-1. Summer selects many files at once.
-2. **Preview** parses and validates them, identifies loggers when possible, and prepares mappings **without saving readings**. A logger is identified only when exactly one known code matches the file name as a whole token. This is a convenience, not a guarantee, and never guessed from temperatures.
-3. Summer resolves **only unidentified files**, and can optionally record a logger move (logger, destination fridge, effective date and time). Moves stay staged until **Import All**.
-4. Known moves resolve the fridge **per reading timestamp**, including files spanning a move. A move does not establish the fridge for earlier readings: those use only a confirmed historical assignment, and one undated assignment counts as the last known mapping. Anything else (such as TL-0417's two undated assignments) is unresolved and never guessed.
-5. **Import All** saves ready files independently. An invalid or ambiguous file never blocks the others.
-6. Unresolved files are not imported and **not stored on the server**. Leaving the page means uploading them again.
-7. **Fridge identity:** A fridge is uniquely identified by its branch and name, case-insensitively. This prevents duplicates caused by inconsistent capitalization while allowing different branches to have fridges with the same name.
+**Still planned (not built):** Initial Setup and Weekly Upload UI screens; fridge detail panel and charts; richer card timestamps once overview exposes them (see Unfinished). Design for the upload workflows remains in `docs/cursor/plan-phase-3.md`.
 
-*Why:* Summer's attention goes only to exceptions, and valid data lands even when some files are problematic.
-
-*Trade-offs:* a batch can end up partly imported, and unresolved files are lost on leaving, since keeping them would need an upload table.
-
-**Limitation:** an unreported physical move cannot be detected reliably from temperatures, because door openings, defrosts and loading look the same. That logger's files keep going to its last known fridge until a move is recorded.
+**Limitation:** an unreported physical move cannot be detected reliably from temperatures. That logger's files keep going to its last known fridge until a move is recorded.
 
 ## 3. Questions for Summer before production
 
@@ -51,20 +62,29 @@
 3. How are physical moves reported to her, and before the next upload?
 4. What does a typical week look like: how many files, any with several loggers?
 5. Besides TL-0231, are there other Fahrenheit loggers, specifically among the Haifa branch's loggers? The MVP will ask her to confirm the unit of any new Haifa logger rather than assume Celsius.
-6. Is the 15-minute logging interval the same for every logger?
-7. Which day does her reporting week start (Monday is assumed, Sunday is common in Israel), and is 90% observed time the right bar for "no excursion observed"? Both are provisional and easy to change.
+6. Does the combined historical Excel contain original logger units (so TL-0231 still needs Fahrenheit conversion), or has she already converted temperatures to Celsius in that sheet?
+7. Is the 15-minute logging interval the same for every logger?
+8. Which day does her reporting week start (Monday is assumed, Sunday is common in Israel), and is 90% observed time the right bar for "no excursion observed"? Both are provisional and easy to change.
 
+## 4. Unfinished, and next steps
 
+**Implemented:**
 
-## 4. Unfinished, and one more hour
+- Phase 3.1: `app/analysis.py`, `GET /api/lookups`, `/api/overview`, `/api/series/...`.
+- Phase 3.2: `app/upload.py`, `POST /api/uploads/review` and `/import`.
+- Phase 3.3A: weekly dashboard (header, week selector, summary counters, city-grouped fridge cards).
 
-**Implemented (Phase 3.1):** weekly retrospective analysis (`app/analysis.py`) and read-only API (`GET /api/lookups`, `/api/overview?week=`, `/api/series/{logger_id}/{fridge_id}?week=`). Constants: `THRESHOLD_C=5.0`, `GAP_MIN=30`, warming 4/1.0/0.5, provisional `WEEK_START_DAY=Monday` and `MIN_COVERAGE=0.90`. Coverage is an estimate from sample intervals, not continuous proof. `end_of_data` and `end_of_period` are distinct.
+**Unfinished:**
 
-**Unfinished:** upload endpoints, the dashboard UI, and frontend tests. The app UI still shows backend health only.
+- React screens for Initial Setup (historical import) and Weekly Upload.
+- Fridge detail view and temperature charts.
+- Overview fields the mockup wanted but cards omit: excursion start (“First detected”), end/recovery time, duration label, gap start/end/minutes, invalid reading timestamp/raw value. Do not invent these in the UI; extend the API only with approval.
 
-**Tests:** 160 backend tests pass. No frontend tests.
+**Tests:** 209 backend tests pass; 16 frontend tests pass (`npm test` in the frontend container).
 
-**One more hour:** weekly upload review/import endpoints, since the dashboard needs data from real uploads next.
+### With one more hour
+
+With one more hour, I would prioritize implementing and testing the basic end-to-end Weekly Upload UI: select multiple files, review problems, resolve logger mappings, and import valid files. This directly addresses Summer's weekly manual workload. I would defer charts and additional visual polish.
 
 ## 5. AI usage
 

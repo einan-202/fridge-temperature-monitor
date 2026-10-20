@@ -1,64 +1,71 @@
 # Fridge Temperature Monitor
 
-A full-stack app for monitoring fridge temperature loggers: a React + TypeScript (Vite) frontend, a FastAPI backend, and a PostgreSQL database, run together with Docker Compose.
+A weekly fridge temperature report for bakery operations: React frontend, FastAPI backend, and PostgreSQL, all run with Docker Compose.
 
-> **Status:** the stack, the database schema, data ingestion (XLSX) and the sample seed work. Upload endpoints, logger moves, the dashboard and the temperature analysis are **not implemented yet**. See [How to Use](#how-to-use) and [NOTES.md](NOTES.md).
+**Current status:** you can start the stack, load sample data, and open the weekly fridge dashboard. Upload screens in the UI and fridge detail charts are not built yet.
 
 ## Prerequisites
 
-- Docker with Docker Compose (`docker compose`)
+- Docker
+- Docker Compose (`docker compose`)
 
-## Quick Start
+## First-Time Setup
+
+From the project root, run these commands in order (one terminal is enough):
 
 ```bash
 cp .env.example .env
-docker compose up --build
+docker compose up -d --build
 ```
 
-In a second terminal, once the containers are healthy, create the tables and load the sample data:
+Wait until the containers are healthy (`docker compose ps` should show them as running/healthy), then:
 
 ```bash
 docker compose exec backend alembic upgrade head
 docker compose exec backend python -m app.seed
 ```
 
-The seed reads the single `.xlsx` in `sample_data/` (or a path you pass) and is safe to run again: a second run inserts nothing.
+Open the app: [http://localhost:5173](http://localhost:5173)
 
-The services are available at:
-
-| Service  | URL                        |
-| -------- | -------------------------- |
-| Frontend | http://localhost:5173      |
-| Backend  | http://localhost:8000      |
+| Service  | URL                   |
+| -------- | --------------------- |
+| Frontend | http://localhost:5173 |
+| Backend  | http://localhost:8000 |
 | API docs | http://localhost:8000/docs |
 
-To stop: `docker compose down` (add `-v` to also delete the database volume).
+## Starting the App Again
+
+```bash
+docker compose up -d
+```
+
+You do not need to migrate or seed again unless you removed the database volume.
+
+## Stopping the App
+
+```bash
+docker compose down
+```
+
+WARNING: `docker compose down -v` permanently deletes the database volume and all stored data.
 
 ## How to Use
 
-**Works today**
+- Open http://localhost:5173 for the weekly temperature report: fridge cards by city, a week selector, and summary counters.
+- The seeded sample data is a small demo week so you can evaluate the dashboard immediately.
+- Other devices on the same network can use `http://<your-machine-ip>:5173`.
 
-- Open http://localhost:5173. The page shows the backend status.
-- `curl -i http://localhost:8000/health` returns `200` with `{"status": "ok", "database": "connected"}`, or `503` if PostgreSQL is unreachable.
-- The seed command above loads the 16 sample rows into the database (inspect them with `psql` or any SQL client).
-- Other devices on the same network can open `http://<your-machine-ip>:5173`.
+## Current Limitations
 
-**Not implemented yet**
+- No upload screens in the UI yet (historical import and weekly bulk upload APIs exist for developers).
+- No fridge detail view or temperature charts.
+- Dashboard cards use summary fields from the overview API; some event timestamps shown in design mockups are not available there yet and are omitted rather than guessed.
 
-- Uploading XLSX files, recording logger moves, the dashboard, and the temperature analysis (excursions above 5 °C, durations, warming trends, data gaps). The planned design is in [docs/cursor/plan-phase-3.md](docs/cursor/plan-phase-3.md).
-
-## Run Tests
-
-Backend tests run inside the running `backend` container:
+## Developer Tests (optional)
 
 ```bash
-docker compose exec backend pytest                         # all backend tests
-docker compose exec backend pytest -m "not integration"    # unit tests only, no database needed
-docker compose exec backend pytest -m integration          # database tests
+docker compose exec backend pytest
+docker compose exec frontend npm test
 ```
 
-Integration tests use a separate `*_test` database and never touch your data. There are no frontend tests yet.
-
-## More
-
-Design decisions, trade-offs, open questions and AI usage are in [NOTES.md](NOTES.md).
+More design notes: [NOTES.md](NOTES.md). Planned Phase 3 design: [docs/cursor/plan-phase-3.md](docs/cursor/plan-phase-3.md).
