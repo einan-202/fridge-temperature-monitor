@@ -2,7 +2,7 @@
 
 A weekly fridge temperature report for bakery operations: React frontend, FastAPI backend, and PostgreSQL, all run with Docker Compose.
 
-**Current status:** you can start the stack, load sample data, and open the weekly fridge dashboard. Upload screens in the UI and fridge detail charts are not built yet.
+**Current status:** the app includes a weekly Dashboard (branch and week filters, KPI counters, high-temperature event details), Fridge Details with temperature charts, Weekly Upload for logger Excel files, and Initial Setup for a historical combined Excel file.
 
 ## Prerequisites
 
@@ -11,9 +11,11 @@ A weekly fridge temperature report for bakery operations: React frontend, FastAP
 
 ## First-Time Setup
 
-From the project root, run these commands in order (one terminal is enough):
+Open a terminal and run these commands in order:
 
 ```bash
+git clone https://github.com/einan-202/fridge-temperature-monitor.git
+cd fridge-temperature-monitor
 cp .env.example .env
 docker compose up -d --build
 ```
@@ -24,6 +26,8 @@ Wait until the containers are healthy (`docker compose ps` should show them as r
 docker compose exec backend alembic upgrade head
 docker compose exec backend python -m app.seed
 ```
+
+The seed command is manual (it does not run when Docker starts). It loads the bundled 16-row Excel sample (15 unique readings) so the Dashboard has demonstration data. A separate historical Excel file can be imported later in Initial Setup.
 
 Open the app: [http://localhost:5173](http://localhost:5173)
 
@@ -51,21 +55,45 @@ WARNING: `docker compose down -v` permanently deletes the database volume and al
 
 ## How to Use
 
-- Open http://localhost:5173 for the weekly temperature report: fridge cards by city, a week selector, and summary counters.
-- The seeded sample data is a small demo week so you can evaluate the dashboard immediately.
-- Other devices on the same network can use `http://<your-machine-ip>:5173`.
+- **Dashboard:** open http://localhost:5173 for the weekly fridge report. Filter by week and branch, read the KPI counters, and open a fridge card for high-temperature event details. Seeded sample data is a small demo week.
+- **Fridge details:** tap a fridge card for that week’s temperature charts and findings.
+- **Weekly Upload:** review and import this week’s logger Excel files (`.xlsx`).
+- **Initial Setup:** review and import one historical combined Excel file (logger, city, fridge, time, temperature), and confirm each logger’s temperature units before importing.
+
+### Opening the App on Your Phone
+
+1. Make sure the app is running on your computer.
+2. Connect your computer and phone to the same Wi-Fi network.
+3. Find your computer's local IP address:
+   - Mac: System Settings → Wi-Fi → Details → IP Address.
+   - Windows: Open Command Prompt, run `ipconfig`, and find "IPv4 Address" under the Wi-Fi adapter.
+4. Open a browser on your phone and enter:
+
+   `http://YOUR-COMPUTER-IP:5173`
+
+   Example: `http://192.168.1.23:5173`
+
+No mobile app installation is required.
 
 ## Current Limitations
 
-- No upload screens in the UI yet (historical import and weekly bulk upload APIs exist for developers).
-- No fridge detail view or temperature charts.
-- Dashboard cards use summary fields from the overview API; some event timestamps shown in design mockups are not available there yet and are omitted rather than guessed.
+- Historical import accepts `.xlsx` files only (not PDF, CSV, `.xls`, or Google Sheets).
+- Misspelled fridge names cannot be renamed in the app; correct them in Excel and import again.
+- A logger that appeared under more than one fridge may need an explicit move recorded in Weekly Upload before later weekly files can be assigned automatically.
+- This is a retrospective weekly report, not live temperature monitoring.
 
 ## Developer Tests (optional)
 
 ```bash
 docker compose exec backend pytest
 docker compose exec frontend npm test
+docker compose exec frontend npm run build
 ```
 
-More design notes: [NOTES.md](NOTES.md). Planned Phase 3 design: [docs/cursor/plan-phase-3.md](docs/cursor/plan-phase-3.md).
+`npm test` runs the frontend Vitest suite. `npm run build` type-checks and builds the production frontend.
+
+More design notes: [NOTES.md](NOTES.md). Plans: [docs/cursor/plan-phase-1-scaffold.md](docs/cursor/plan-phase-1-scaffold.md), [docs/cursor/plan-phase-2.md](docs/cursor/plan-phase-2.md), [docs/cursor/plan-phase-3.md](docs/cursor/plan-phase-3.md), [docs/cursor/plan-phase-4.md](docs/cursor/plan-phase-4.md).
+
+## Sample Excel Files
+
+Additional synthetic Excel files for testing Weekly Upload, including different formats and invalid inputs, are available in [sample_files/](sample_files/README.md).

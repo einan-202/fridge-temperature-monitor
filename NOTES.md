@@ -2,117 +2,153 @@
 
 ## 1. Time spent
 
-Approximately 18 hours so far, including planning, implementation, testing, debugging, and documentation.
+Approximately 19 hours, including planning, implementation, testing, debugging and documentation.
 
-## 2. Key decisions and trade-offs
+## 2. Design decisions and assumptions
 
-**Implemented through Phase 3.3C:** four-table schema and migration; normalization and ingestion; sample seed; weekly retrospective analysis and read APIs; historical/weekly upload APIs; weekly fridge dashboard; Weekly Upload UI; fridge details with daily charts.
+Most important first. Summer was unavailable during development, so a few values are assumed and listed as questions in section 3.
 
-**Why these choices (brief):**
+1. **High temperatures.** The limit is 5°C (strictly above). A single high reading (an isolated spike that then recovers) is separated from a longer event, because one spike does not necessarily mean the fridge has a serious problem. Two or more consecutive high readings are a sustained event. A one-reading event that ends in a gap, an invalid reading, or the end of recorded data is unconfirmed.
 
-- **Weekly retrospective analysis** matches Summer’s weekly upload workflow and avoids misleading real-time status claims.
-- **Reporting week default:** Weekly reporting follows ISO 8601 (Monday–Sunday) as a standard, consistent default. The reporting week should be configurable in a future version based on Summer's workflow.
-- **Historical imports are atomic** so a failed first load cannot leave a half-built initial dataset.
-- **Weekly imports commit per valid file** so one problematic logger does not block other branches.
-- **Unknown logger move dates are not invented** because that could attach readings to the wrong fridge.
+2. **Missing data.** Missing readings do not mean the fridge was safe. A gap of more than 30 minutes, or an `ERR`/invalid value, ends the current high-temperature or warming run. The report shows that information is missing. Unobserved time is never called safe. Coverage is an estimate from sample intervals; “no excursion observed” also requires at least 90% of the week observed (`MIN_COVERAGE=0.90`, provisional).
 
-**Haifa temperature units (per logger, not per branch):**
+3. **Event duration.** Duration is how long a high temperature was *recorded*, a lower bound, not how long it is assumed to have lasted. One reading is shown as a single reading. If the run ends in a gap, an invalid value, the week boundary, or the end of recorded data, the label is “at least”. If recordings stop before recovery, the system says recovery was not confirmed.
 
-- Summer refers to “the old logger in Haifa” (singular), not every Haifa logger.
-- The sample identifies **TL-0231** with values 38.3 and 39.0, which only make sense as Fahrenheit; `HISTORICAL_LOGGER_UNITS` / seed both set TL-0231 to `F`.
-- Units are configured **per logger**: TL-0231 is predefined as Fahrenheit; other Haifa loggers are **not** assumed Fahrenheit. A new Haifa logger other than TL-0231 stays unresolved until `logger_units` supplies an explicit `C` or `F` (import is blocked until then). Non-Haifa new loggers default to Celsius.
-- **Ambiguity:** Summer’s combined historical Excel may already contain Celsius values. Treating those as Fahrenheit would convert again and store wrong °C.
-- **Current behaviour:** conversion always follows the logger’s stored unit (`to_celsius(..., logger.unit)`). There is no separate “already converted / skip conversion” flag. For a *new* logger, `logger_units` can override the unit on first import (including setting TL-0231 to `C` if the sheet is already Celsius). An *existing* logger’s unit is never changed on re-import. Units are never inferred from temperature magnitudes.
+   `end_of_period` is used only when the last in-week high reading sits at the week boundary *and* a later reading exists in the database. Truncated recordings earlier in the week are `end_of_data` even if a later week has data.
 
-**Supporting future changes:**
+4. **Gradual warming.** A warning is shown when at least four consecutive valid readings all rise, the total rise is at least 1.0°C, and no single step is more than half the total — even if the temperature is still below 5°C. That can flag a fridge that may be starting to fail.
 
-- **Implemented:** units are per logger (not per city), so devices may use different scales; dated moves preserve the correct fridge for historical readings; Unknown move dates are not invented; unknown Haifa logger units require confirmation, while new non-Haifa loggers default to Celsius.
-- **Limitation (unresolved):** a combined historical sheet may already hold Celsius values from a Fahrenheit logger. The system has only one stored unit per logger—no separate source unit per import. Setting that unit to `C` for a converted sheet would skip conversion correctly for that file, but later original Fahrenheit files for the same logger would then be stored without conversion (wrong °C).
-- **Future improvement (not built):** separate the logger’s native unit from each import’s source unit so historical and weekly uploads can both convert correctly.
+5. **Logger movements.** Loggers and fridges are separate: a logger can move. Each reading keeps the fridge named on that row. Unknown move dates stay NULL and are never invented. When the correct fridge cannot be determined (for example TL-0417 under two undated assignments), the user must confirm it. An unreported physical move cannot be detected from temperatures alone.
 
-**Phase 2 (ingestion):**
+6. **File matching.** Filenames are not assumed to contain the correct logger number. A `TL-` token in the name, or one consistent Logger column, is a suggestion. The user reviews and corrects assignments before import. Mixed or conflicting cells stay blocking.
 
-- Each reading keeps its own `fridge_id`. Unknown assignment dates stay NULL and are never invented (TL-0417 moved, but nothing says when).
-- `Decimal` parsing. `ERR`/blank/NaN become NULL with the raw text kept. No thresholds: 150 is stored as given.
-- Dedup on (logger, time): first row wins, differing repeats are reported as conflicts.
-- `Time`/`Temp`-only files need the logger and fridge passed explicitly; a fridge is never guessed.
-- Commits live in the caller, not in the ingestion service.
-- TL-0231 is Fahrenheit per the assignment data (its sample values 38.3 and 39 agree); the file has no unit column.
+7. **Different Excel formats.** Column name aliases, column order, native Excel datetimes, `YYYY-MM-DD HH:MM`, and day-first `DD/MM/YYYY HH:MM` are supported because files from different branches may not look the same.
 
-**Phase 3 analysis (backend):** weekly retrospective, not real time. Excursions strictly above 5 °C stay visible after recovery. An `ERR` ends a run like a gap. Coverage is an estimate from sample intervals; unobserved time is never called safe. `end_of_data` vs `end_of_period` are distinct. Provisional: `MIN_COVERAGE=0.90`. Week bounds follow the ISO 8601 default above.
+8. **Temperature units.** The old Haifa logger TL-0231 is assumed Fahrenheit because its example readings are 38.3 and 39.0. Summer has **not** confirmed this. Reports store and show Celsius. Other Haifa loggers are **not** assumed Fahrenheit: a new Haifa logger other than TL-0231 needs an explicit C/F choice before historical import. New non-Haifa loggers default to Celsius. Units are never guessed from magnitudes.
 
-**Phase 3.2 upload APIs** (`POST /api/uploads/review`, `/import`): same Phase 2 ingestion; review is a dry run (rolled back); historical import is atomic; weekly import commits per ready file. Filename logger detection, per-reading fridge resolution, staged moves and new loggers, fridge-conflict pre-check, Haifa unit confirmation for unknown historical loggers.
+   Historical **source units** (the numbers in this Excel file) are separate from the logger’s stored native unit. An existing logger’s native unit is never overwritten. Weekly files still convert using the stored native unit.
 
-**Phase 3.3A dashboard:** weekly report from `GET /api/overview` only (no `/api/series` here). Findings come from overview counts, not temperature math in React. Cards open Fridge Details. UX notes are under Frontend Decisions.
+9. **Duplicate readings.** The unique key is logger and time. An identical repeat is skipped. If values or fridges disagree, the conflict is reported and the first stored reading is kept.
 
-**Phase 3.3C fridge details:** one screen per fridge and selected week (not in main nav). Charts use `GET /api/series/{logger_id}/{fridge_id}` once per logger; days switch locally. Weekly findings use series excursion, gap, and invalid fields only.
+10. **Historical and weekly files.** Initial Setup loads one combined historical file (logger, city, fridge, time, temperature). Weekly Upload loads Time/Temp logger files. Review is a dry run. Historical import is atomic. Weekly import can succeed file by file so one bad logger does not block other branches.
 
-**Still planned (not built):** Initial Setup UI; richer card timestamps once overview exposes them (see Unfinished). Upload workflow design remains in `docs/cursor/plan-phase-3.md`.
+11. **Mobile-friendly design.** A responsive web app, not a native app, because Summer mainly uses her phone. It also works on a computer without a separate install. Docker Compose and PostgreSQL run on a laptop without accounts or paid services and keep imported data after restarts.
 
-**Frontend Decisions and Lessons Learned**
+12. **Dashboard layout.** Fridges are grouped by branch (A–Z). Branch and week filters, KPI counters, and red/amber/green/neutral findings help find problems quickly. Cards already show timestamps for high-temperature events (start times and recovery wording from the overview `excursions` list). Gradual warming is detected, but its date and time are not yet displayed on the Dashboard cards. Fridge Details (opened from a card, not a third main-nav item) has daily charts. This is a weekly retrospective report, not live monitoring. Navigation uses `useState` (Dashboard / Weekly Upload / Initial Setup), so there are no deep links.
 
-- **Web, not native:** Chose a responsive React web application instead of a native mobile app. A single codebase supports desktop and mobile browsers, while Docker Compose enables simple local setup without deployment or app installation. This reduces development and maintenance complexity while meeting Summer's mobile usability needs.
-- **Dashboard:** Fridge-first weekly report; cities/loggers A–Z; short English; red/amber/green/neutral from saved findings. Desktop city grid vs stacked mobile cards. Historical data is never shown as live monitoring.
-- **Navigation:** `useState` switches Dashboard / Weekly Upload instead of React Router—less plumbing, but no deep links. Fridge Details open from a card and are not a third nav item.
-- **Weekly upload:** Select → Review → Resolve → Import. Needs Attention first; ready files collapsed; per-file corrections. Partial import keeps unresolved `File` objects in the tab so other files can still save.
-- **Logger identity:** A filename `TL-` code or one consistent Logger-column value is a suggestion. The user confirms it; mixed or conflicting cells stay blocking; sheet values are never overwritten. New loggers/fridges and dated moves cover real changes.
-- **Index bug:** After remove/import, selections keyed by file index could attach the previous file’s logger to the next slot. Multi-file tests caught it; remaining files are remapped, with regression tests.
-- **Startup:** Skeleton placeholders (no fake readings) and a few short retries for proxy connection failures; application 500s still show the error and Try again.
-- **Docker:** A stale `node_modules` volume omitted Vitest. `npm ci` with `package-lock.json` is the intended install; an old volume can still need recreating.
-- **Truncated week:** Manual E2E testing found a Monday-last high-temperature event described as continuing through Sunday. Backend marked `end_of_period` whenever later-week data existed, even though this week's recordings had ended. Classification now distinguishes `end_of_data` from `end_of_period`; frontend wording was updated; backend and frontend regression tests were added. Evidence: commit `fd7efc8c4efad5d93e6ab0f860ee654fd26f8173`.
+13. **Supported file types.** Uploads are `.xlsx` only. Other formats would need more testing and were not required by the examples.
 
-**Limitation:** an unreported physical move cannot be detected reliably from temperatures. That logger's files keep going to its last known fridge until a move is recorded.
+14. **Sample data.** Only 16 example rows were provided, not the full ~3,000-row file. The sample has 15 unique readings (one in-file duplicate, one `ERR` stored as NULL with the raw text kept). That sample plus extra tests cover other situations. Extreme values such as 150 are stored as given; there is no range filter.
 
-## 3. Questions for Summer before production
+15. **Local setup.** Docker Compose and PostgreSQL, as above. Migrations and the sample seed are manual (`alembic upgrade head`, then `python -m app.seed`). Reporting weeks are ISO 8601 Monday–Sunday (`WEEK_START_DAY=0`), provisional until Summer confirms.
 
-1. How does a logger file identify its logger: file name (exact pattern), column, or not at all?
-2. Which fridge is each logger in now, and which loggers moved in the historical file, with dates and times?
-3. How are physical moves reported to her, and before the next upload?
-4. What does a typical week look like: how many files, any with several loggers?
-5. Besides TL-0231, are there other Fahrenheit loggers, specifically among the Haifa branch's loggers? The MVP will ask her to confirm the unit of any new Haifa logger rather than assume Celsius.
-6. Does the combined historical Excel contain original logger units (so TL-0231 still needs Fahrenheit conversion), or has she already converted temperatures to Celsius in that sheet?
-7. Is the 15-minute logging interval the same for every logger?
-8. Which day does her reporting week start (Monday is assumed, Sunday is common in Israel), and is 90% observed time the right bar for "no excursion observed"? Both are provisional and easy to change.
+Raw invalid values are preserved (`raw_value`, `raw_timestamp`). `ERR`/blank/NaN become NULL temperature. Commits live in the upload/seed caller, not in the ingestion service.
 
+## 3. Questions for Summer before going live
 
+Summer was unavailable during development. These are questions for **before real-world use**, not blockers that stopped implementation.
 
-## 4. Unfinished, and next steps
+1. How often do your temperature loggers take readings? Is it usually every 15 minutes, or does it vary between devices?
 
-**Implemented:**
+2. How long can a fridge stay above 5°C before someone needs to take action? I understand that a brief rise followed by a return to normal is not a problem.
 
-- Phase 3.1: `app/analysis.py`, `GET /api/lookups`, `/api/overview`, `/api/series/...`.
-- Phase 3.2: `app/upload.py`, `POST /api/uploads/review` and `/import`.
-- Phase 3.3A: weekly dashboard (header, week selector, summary counters, city-grouped fridge cards).
-- Phase 3.3B: Weekly Upload UI (select, review, per-file corrections, partial import).
-- Phase 3.3C: Fridge Details (daily charts from `/api/series`, weekly findings from backend fields).
+3. When would you consider a fridge to be warming up too much? Should we warn you whenever the temperature keeps rising, even if it is still below 5°C?
 
-**Unfinished:**
+4. Do you know when loggers were moved between fridges? This would help us make sure the readings belong to the correct fridge.
 
-- React screen for Initial Setup (historical import).
-- Overview cards still omit event timestamps; those appear on Fridge Details from `/api/series`. Do not invent them on cards; extend overview only with approval.
+5. Does the old logger in Haifa (TL-0231) actually use Fahrenheit? I assumed so based on the example readings, but I'd like to confirm.
 
-**Tests (last verified):** 224 backend tests (`pytest`); 78 frontend tests (`npm test`); TypeScript check and frontend production build succeeded.
+6. Have you already converted any temperatures in your Excel files? We want to make sure temperatures are not converted twice.
+
+7. When readings are missing, how long should the gap be before you want to know about it?
+
+8. What does the health inspector usually need to see? Would the temperature history and the times of any problems be enough, or would a downloadable report help?
+
+9. Would you also want alerts when a fridge starts having problems, rather than only reviewing the weekly reports?
+
+10. Would you prefer your weekly reports to start on Sunday or Monday? I currently use Monday.
+
+11. Could you ask branch managers to include the logger number in each weekly Excel filename? For example: `TL-0417_2026-10-12.xlsx`. This would help the app identify the logger automatically, so you would only need to check its fridge assignment when necessary.
+
+## 4. Implemented, remaining limitations, and one more hour
+
+**Implemented:** four-table schema and migration; sample seed; weekly retrospective analysis; read APIs (`/api/lookups`, `/api/overview`, `/api/series/...`); historical and weekly review/import APIs; Weekly Dashboard (week and branch filters, KPI counters, event details including timestamps from overview excursions); Fridge Details with temperature charts; Weekly Upload UI; Initial Setup UI for one combined historical Excel file, including explicit historical source-unit selection separate from native logger units.
+
+**Remaining limitations:**
+
+- Historical import accepts `.xlsx` only.
+- Misspelled fridge names cannot be renamed in the app; correct them in Excel and import again.
+- A logger seen under more than one fridge may need an explicit move in Weekly Upload before later weekly files can be assigned automatically.
+- This is a retrospective weekly report, not live temperature monitoring.
+- Week start (Monday) and 90% coverage are provisional.
+- A stale Docker `node_modules` volume can omit Vitest until the volume is recreated (`npm ci` with the lockfile is the intended install).
+
+**Tests (last verified):** 274 backend tests (`pytest`); 116 frontend tests (`npm test` / Vitest); frontend production build succeeded.
+
+### Possible Future Improvements
+
+These are future improvements, not implemented features.
+
+1. **Downloadable reports:** Allow Summer to download a report showing temperature history, dates, and durations of problems, so she can share it with the health inspector.
+
+2. **Immediate alerts:** The current app provides weekly reports. In the future, Summer could receive alerts when a fridge starts having problems, instead of waiting for the weekly review.
+
+3. **Configurable reporting rules:** Allow Summer to adjust the reporting week, warming thresholds, and missing-reading rules after confirming what works best for her.
+
+4. **Easier fridge name corrections:** Allow users to correct fridge names directly in the app instead of editing the Excel file and importing it again.
+
+5. **Additional file formats:** Support CSV or older Excel files if branch managers need them. Currently, the app supports `.xlsx` files only.
+
+6. **Easier logger identification:** Branch managers could use consistent filenames, such as `TL-0417_2026-10-12.xlsx`, to reduce manual selection during weekly uploads. Fridge assignments would still need checking when a logger has moved.
+
+7. **Gradual warming timestamps:** Show the actual date and time of gradual warming directly on Dashboard fridge cards, so Summer can quickly see when it happened without opening Fridge Details.
 
 ### With one more hour
 
-With one more hour, I would prioritize implementing and testing the Initial Setup (historical import) UI so a new environment can be loaded without using the API by hand.
+My priority would be to add a downloadable historical temperature report for the health inspector, making it easier for Summer to share the exact dates, times and durations of problems.
 
-## 5. AI usage
+## 5. AI tools and lessons learned
 
-**Mistake 1 (infrastructure):** the AI wrote the database healthcheck as `pg_isready -U $POSTGRES_USER`. Without `-d`, it probes a database named after the user, which doesn't exist, yet the container reported healthy.
+### How I Worked with AI
 
-**Detection:** the Postgres logs showed `FATAL: database "fridge_monitor" does not exist` about 100 times.
+I used ChatGPT and Cursor to help with planning, writing code, creating tests, and debugging.
 
-**Correction:** `docker-compose.yml` now uses `-d $${POSTGRES_DB}`, committed in `7bf242d`.
+I divided the project into small phases and gave the AI clear, focused tasks instead of asking it to build everything at once.
 
-**Mistake 2 (planning, real-time vs retrospective):** when asked to redesign the Phase 3 dashboard around fridges, the AI invented a real-time "current status" model unprompted: a `FRESH_MAX_MIN` of 120 minutes, a server `?now=` parameter, and statuses like `active_excursion` and `stale`. Nothing in any instruction asked for a freshness clock; Summer's actual workflow is a weekly upload reviewed after the fact, so "is this fridge OK right now" was never a question she could ask.
+I reviewed its suggestions, made the important design decisions myself, and rejected assumptions that were not supported by Summer's requirements.
 
-**Detection:** caught in review, not by running code — the next instruction opened with "Correct the Phase 3 plan to use WEEKLY RETROSPECTIVE MONITORING, not real-time monitoring," spelling out that `FRESH_MAX_MIN`, `?now=`, and `active_excursion`/`stale` all had to go.
+I used automated tests and manual testing, including on mobile, to check that the application actually worked. When I found problems, I fixed them and added regression tests where needed.
 
-**Correction:** the freshness section of `docs/cursor/plan-phase-3.md` was replaced with a weekly report model (`WEEK_START_DAY`, `MIN_COVERAGE`, a week selector, `excursion_observed` / `warming_observed` / `insufficient_data` / `no_excursion_observed`). **Record:** this section is the documented review record, not independent Git proof. The mistake was introduced and corrected before anything was committed, so Git does not preserve the erroneous intermediate version. The only repository facts are that the plan was committed once in `370418c` without any freshness concept, and that the final plan has no `FRESH_MAX_MIN`, `?now=` or real-time status.
+I also managed Git commits and pushes myself to keep control over the changes.
 
-**Mistake 3 (planning, an unsupported branch-wide assumption):** Phase 2 reasonably inferred TL-0231 is Fahrenheit from its own values (38.3, 39 — see `git show 370418c:NOTES.md`, "TL-0231 is assumed Fahrenheit from its values"). When Phase 3 added automatic units for the historical import, the AI over-generalized this one evidenced fact into a blanket rule, "every other logger in the file is Celsius" — including other Haifa loggers, for which there is no such evidence; Haifa is precisely the branch with a known exception.
+AI helped me work faster, but I remained responsible for the decisions and final result.
 
-**Detection:** caught in review: "do not assume every additional Haifa logger is Celsius... require one-time verification for unknown units during historical import."
+**1. PostgreSQL healthcheck (AI-generated, found in logs).** The AI wrote `pg_isready -U $POSTGRES_USER`. Without `-d`, Postgres probes a database named after the user, which does not exist, yet the container still reported healthy.
 
-**Correction:** `docs/cursor/plan-phase-3.md` now applies the Celsius default only to a **non-Haifa** new logger; a new Haifa logger other than TL-0231 gets a required, un-prefilled C/F choice in the review, stored once and never re-asked. **Record:** as above, this is the documented review record, not Git proof: the blanket Celsius rule was introduced and corrected before any commit, so no commit preserves it. The only checkable facts are the committed Phase 2 note (`git show 370418c:NOTES.md`) and the final plan section "Units are predefined only where there is evidence" with the Haifa carve-out.
+**Detection:** Postgres logs showed `FATAL: database "fridge_monitor" does not exist` about 100 times.
+
+**Correction:** `docker-compose.yml` uses `-d $${POSTGRES_DB}`. Evidence: commit `7bf242d`.
+
+**2. Real-time monitoring proposal (AI planning, caught in review).** When asked to redesign the Phase 3 dashboard around fridges, the AI invented a real-time “current status” model: `FRESH_MAX_MIN` of 120 minutes, a server `?now=` parameter, and statuses like `active_excursion` and `stale`. Summer’s workflow is a weekly upload reviewed after the fact.
+
+**Detection:** plan review — the next instruction required weekly retrospective monitoring, not real-time.
+
+**Correction:** the Phase 3 plan uses a weekly report (`WEEK_START_DAY`, `MIN_COVERAGE`, week selector, `excursion_observed` / `warming_observed` / `insufficient_data` / `no_excursion_observed`). **Record:** the mistaken version was introduced and corrected before any commit, so Git does not preserve it. The plan was committed once in `370418c` without a freshness clock.
+
+**3. Unsupported Celsius assumption (AI planning, caught in review).** Phase 2 reasonably treated TL-0231 as Fahrenheit from 38.3 and 39 (`git show 370418c:NOTES.md`). When Phase 3 added historical units, the AI treated every other logger — including other Haifa loggers — as Celsius, without evidence.
+
+**Detection:** review required not assuming extra Haifa loggers are Celsius, and one-time verification for unknown units.
+
+**Correction:** Celsius default applies only to a **new non-Haifa** logger; a new Haifa logger other than TL-0231 needs an explicit C/F choice. **Record:** the blanket Celsius rule was never committed. Checkable facts are the Phase 2 note (`git show 370418c:NOTES.md`) and the final plan’s “units only where there is evidence” Haifa carve-out.
+
+**4. Truncated-week event wording (bug found in manual testing).** A Monday-last high-temperature event was described as continuing through Sunday. The backend used `end_of_period` whenever any later-week data existed, even when this week’s recordings had already stopped.
+
+**Correction:** `end_of_data` vs `end_of_period` as in section 2; frontend wording updated; backend and frontend regression tests added. Evidence: commit `fd7efc8`.
+
+**5. Multi-file upload index (bug found in tests).** After remove or partial import, selections keyed by file index could attach the previous file’s logger to the next slot.
+
+**Correction:** remaining files are remapped by identity; regression tests cover it.
+
+**6. Docker / Vitest (environment).** A stale `node_modules` volume omitted Vitest. `npm ci` with `package-lock.json` is the intended install; an old volume can still need recreating.
+
+**Startup UX:** skeleton placeholders (no fake readings) and a few short retries for proxy connection failures; application 500s still show the error and Try again.

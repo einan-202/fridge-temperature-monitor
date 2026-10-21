@@ -178,6 +178,8 @@ describe("InitialSetup", () => {
   it("rejects non-xlsx files", async () => {
     mockHistorical({});
     render(<InitialSetup />);
+    expect(screen.getByRole("button", { name: "Select Excel file" })).toBeEnabled();
+    expect(screen.getByText("No file selected yet.")).toBeInTheDocument();
     expect(screen.getByLabelText("Select historical Excel file")).toHaveAttribute(
       "accept",
       ".xlsx",
@@ -186,6 +188,7 @@ describe("InitialSetup", () => {
       new File(["nope"], "notes.csv", { type: "text/csv" }),
     );
     expect(screen.getByText(/Only \.xlsx Excel files are supported/)).toBeInTheDocument();
+    expect(screen.getByText("No file selected yet.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Review file" })).toBeDisabled();
   });
 
@@ -195,6 +198,8 @@ describe("InitialSetup", () => {
     });
     render(<InitialSetup />);
     await selectFile(xlsx());
+    expect(screen.getByText("history.xlsx")).toBeInTheDocument();
+    expect(screen.queryByText("No file selected yet.")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Review file" }));
 
     expect(await screen.findByRole("heading", { name: "2. Check fridges and temperature units" })).toBeInTheDocument();

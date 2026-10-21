@@ -140,6 +140,7 @@ export function InitialSetup({ onOpenDashboard, onOpenWeeklyUpload }: InitialSet
     if (!isXlsx(picked)) {
       setUnsupportedNote("Only .xlsx Excel files are supported.");
       setFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
       return;
     }
     setUnsupportedNote(null);
@@ -284,14 +285,35 @@ export function InitialSetup({ onOpenDashboard, onOpenWeeklyUpload }: InitialSet
             ref={fileInputRef}
             type="file"
             accept=".xlsx"
-            className="weekly__file-input"
+            className="weekly__file-input weekly__file-input--hidden"
             aria-label="Select historical Excel file"
             onChange={(e) => onPickFile(e.target.files)}
           />
+          <div className="weekly__actions">
+            <button
+              type="button"
+              className="weekly-btn weekly-btn--ghost"
+              disabled={busy}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              Select Excel file
+            </button>
+          </div>
           {unsupportedNote ? (
             <p className="weekly__note weekly__note--amber">{unsupportedNote}</p>
           ) : null}
-          {file ? <p className="weekly__file-count">Selected: {file.name}</p> : null}
+          {file ? (
+            <div className="weekly__file-list">
+              <p className="weekly__file-count">1 file selected</p>
+              <ul className="weekly__picked">
+                <li>
+                  <span className="weekly__picked-name">{file.name}</span>
+                </li>
+              </ul>
+            </div>
+          ) : (
+            <p className="weekly__note">No file selected yet.</p>
+          )}
           <div className="weekly__actions">
             <button
               type="button"

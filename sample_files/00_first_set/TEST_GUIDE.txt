@@ -1,0 +1,51 @@
+Weekly logger upload test pack — fictional data, 12–18 October 2026
+Each XLSX is a SEPARATE logger weekly file. Header row starts in row 1.
+Keep these as separate files. Upload several at once in the Weekly Upload UI.
+Inspect actual API behavior before assuming the expected result is supported.
+Do not use the seed command on these weekly logger files.
+
+01_TL-0388_Rishon_Time_Temp.xlsx — 72 data rows
+  Columns: Time, Temp
+  Scenario: Existing logger TL-0388 from filename; only Time/Temp; gradually warming above 5°C on 13 Oct.
+  Check: Usually ready if filename logger detection works and known assignment is unambiguous.
+
+02_TL-0512_Jerusalem_Temp_Time.xlsx — 23 data rows
+  Columns: Temp, Time
+  Scenario: Existing logger TL-0512 in filename; Temp column appears BEFORE Time; 150-minute missing interval and ERR.
+  Check: Check reversed columns, data-gap and ERR detection.
+
+03_TL-0231_Haifa_Fahrenheit.xlsx — 48 data rows
+  Columns: Time, Temp
+  Scenario: Existing Haifa logger TL-0231; Fahrenheit raw values 38–42°F, plus ERR. Expected normalization to °C.
+  Check: Known logger native unit F, not all Haifa loggers.
+
+04_logger_in_column_generic_filename.xlsx — 20 data rows
+  Columns: Temp, Logger, Time
+  Scenario: Generic filename; logger code TL-0388 appears only in Logger column; scrambled column order.
+  Check: Should use or validate logger column if supported; otherwise needs review mapping (inspect actual API).
+
+05_no_logger_anywhere.xlsx — 18 data rows
+  Columns: Time, Temp
+  Scenario: No logger code in either filename or sheet; cannot infer logger safely from measurements.
+  Check: Needs Attention: choose existing logger explicitly.
+
+06_TL-0417_TelAviv_Display2_extra_columns.xlsx — 18 data rows
+  Columns: Fridge, Branch, Temp, Time, Logger
+  Scenario: Known moved logger TL-0417; multiple columns in nonstandard order; explicit fridge Display 2 and lowercase branch.
+  Check: Check assignment ambiguity/move handling; may require date-based move confirmation before import.
+
+07_TL-0777_Haifa_NEW_Temp_Time.xlsx — 20 data rows
+  Columns: Temp, Time
+  Scenario: Unknown NEW logger TL-0777 in Haifa; Fahrenheit-like sample values; expected unit confirmation and fridge registration.
+  Check: Needs Attention: new logger registration, confirmed native C/F unit and explicit existing fridge; no inference from values.
+
+08_TL-0512_duplicates_and_conflict.xlsx — 18 data rows
+  Columns: Logger, Time, Temp
+  Scenario: Known logger TL-0512; 1 identical repeated timestamp/value and 1 conflicting repeated timestamp/value.
+  Check: Review should surface duplicate and conflict according to backend policy.
+
+IMPORTANT: 06_TL-0417... involves an ambiguously moved logger; known assignments
+may need an explicit dated move to resolve, regardless of optional Fridge column.
+IMPORTANT: 07_TL-0777... is NEW; Haifa native units must be confirmed explicitly.
+Re-review after corrections, then import only ready files.
+Verify week starting 2026-10-12 in the dashboard.
