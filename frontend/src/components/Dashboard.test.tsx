@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Dashboard } from "./Dashboard";
-import { sampleOverview } from "../test/fixtures";
+import { overviewExcursion, sampleOverview } from "../test/fixtures";
 import type { OverviewResponse } from "../types/overview";
 
 function mockOverview(data: OverviewResponse | (() => OverviewResponse)) {
@@ -25,6 +25,16 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function kpiValue(summary: HTMLElement, label: string): string | null {
+  const text = within(summary).getByText((_, element) => {
+    return (
+      element?.classList.contains("summary-counters__label--full") === true &&
+      element.textContent === label
+    );
+  });
+  return text.parentElement?.querySelector(".summary-counters__value")?.textContent ?? null;
+}
+
 describe("Dashboard", () => {
   it("renders sample overview cards in city / logger order with correct findings", async () => {
     mockOverview(sampleOverview());
@@ -34,10 +44,9 @@ describe("Dashboard", () => {
     expect(screen.getByText("Weekly temperature report")).toBeInTheDocument();
 
     const summary = screen.getByLabelText("Week summary");
-    expect(within(summary).getByText("Fridges with data")).toBeInTheDocument();
-    expect(within(summary).getByText("5")).toBeInTheDocument();
-    expect(within(summary).getByText("1")).toBeInTheDocument();
-    expect(within(summary).getByText("3")).toBeInTheDocument();
+    expect(kpiValue(summary, "Total fridges")).toBe("5");
+    expect(kpiValue(summary, "Sustained high temps")).toBe("1");
+    expect(kpiValue(summary, "No readings")).toBe("0");
 
     // City headings in A–Z order
     const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
@@ -52,21 +61,21 @@ describe("Dashboard", () => {
     expect(cards[0]).toHaveTextContent("Haifa");
     expect(cards[0]).toHaveTextContent("Logger: TL-0231");
     expect(cards[0]).toHaveTextContent("3.89°C");
-    expect(cards[0]).toHaveTextContent("One invalid reading");
-    expect(cards[0]).toHaveAttribute("data-tone", "amber");
+    expect(cards[0]).toHaveTextContent("Data issue: 1 invalid reading");
+    expect(cards[0]).toHaveAttribute("data-tone", "neutral");
 
     expect(cards[1]).toHaveTextContent("Jerusalem");
     expect(cards[1]).toHaveTextContent("Some readings are missing");
-    expect(cards[1]).toHaveAttribute("data-tone", "amber");
+    expect(cards[1]).toHaveAttribute("data-tone", "neutral");
 
     expect(cards[2]).toHaveTextContent("Rishon LeZion");
     expect(cards[2]).toHaveTextContent("7.1°C");
-    expect(cards[2]).toHaveTextContent("Temperature stayed above 5°C");
-    expect(cards[2]).toHaveTextContent("Temperature rose gradually");
+    expect(cards[2]).toHaveTextContent("High-temperature event");
+    expect(cards[2]).not.toHaveTextContent("Temperature stayed above 5°C");
     expect(cards[2]).toHaveAttribute("data-tone", "red");
-    // First detected / duration are not on /api/overview — must be omitted
-    expect(cards[2]).not.toHaveTextContent("First detected");
-    expect(cards[2]).not.toHaveTextContent("30 minutes");
+    expect(cards[2]).toHaveTextContent("First detected: 14 Sep, 06:15");
+    expect(cards[2]).toHaveTextContent("Time above 5°C: at least 30 min");
+    expect(cards[2]).toHaveTextContent("Recovery not confirmed.");
 
     expect(cards[3]).toHaveTextContent("Display 2");
     expect(cards[3]).toHaveTextContent("Not enough readings this week");
@@ -77,7 +86,10 @@ describe("Dashboard", () => {
     expect(cards[4]).toHaveTextContent("9.4°C");
     expect(cards[4]).toHaveTextContent("One high reading — recovered");
     expect(cards[4]).toHaveAttribute("data-tone", "green");
-    expect(cards[4]).not.toHaveTextContent("First detected");
+    expect(cards[4]).toHaveTextContent("First detected: 14 Sep, 06:15");
+    expect(cards[4]).toHaveTextContent("Isolated high reading");
+    expect(cards[4]).toHaveTextContent("Recovery confirmed.");
+    expect(cards[4]).not.toHaveTextContent("single reading");
 
     // No detail CTA in this phase
     expect(screen.queryByText(/View graph/i)).not.toBeInTheDocument();
@@ -146,7 +158,7 @@ describe("Dashboard", () => {
       ok: true,
       json: async () => sampleOverview(),
     } as Response);
-    expect(await screen.findByText("Fridges with data")).toBeInTheDocument();
+    expect(await screen.findByText("Total fridges")).toBeInTheDocument();
     expect(screen.getByText("Fridge Temperature Monitor")).toBeInTheDocument();
     expect(screen.queryByTestId("dashboard-skeleton")).not.toBeInTheDocument();
   });
@@ -185,7 +197,7 @@ describe("Dashboard", () => {
     render(<Dashboard />);
     expect(screen.getByTestId("dashboard-skeleton")).toBeInTheDocument();
     expect(
-      await screen.findByText("Fridges with data", {}, { timeout: 4000 }),
+      await screen.findByText("Total fridges", {}, { timeout: 4000 }),
     ).toBeInTheDocument();
     expect(attempts).toBe(3);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
@@ -226,6 +238,7 @@ describe("Dashboard", () => {
         fridge_id: 99,
         branch: "Tel Aviv",
         name: "Shared fridge",
+        excursions: [],
         series: [
           {
             logger_id: 8,
@@ -284,5 +297,153 @@ describe("Dashboard", () => {
     expect(onOpenFridge.mock.calls[0][0].fridge.fridge_id).toBe(4);
     expect(onOpenFridge.mock.calls[0][0].fridge.name).toBe("Cream cakes");
     expect(onOpenFridge.mock.calls[0][0].week).toBe("2026-09-14");
+  });
+
+  it("shows different fridge-card events after switching weeks", async () => {
+    const user = userEvent.setup();
+    const cream = sampleOverview().fridges.find((item) => item.name === "Cream cakes")!;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("week=2026-09-07")) {
+        return {
+          ok: true,
+          json: async () => ({
+            weeks: ["2026-09-14", "2026-09-07"],
+            week: {
+              start: "2026-09-07 00:00:00",
+              end: "2026-09-14 00:00:00",
+              monday: "2026-09-07",
+            },
+            fridges: [
+              {
+                ...cream,
+                excursions: [
+                  overviewExcursion({
+                    logger_code: "TL-0388",
+                    start: "2026-09-07 06:00:00",
+                    end: "2026-09-07 06:00:00",
+                    kind: "isolated_spike",
+                    duration_minutes: 0,
+                    duration_label: "single reading",
+                    ended_by: "recovered",
+                  }),
+                ],
+                sustained_count: 0,
+                isolated_spike_count: 1,
+                warming_count: 0,
+              },
+            ],
+          }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          ...sampleOverview(),
+          weeks: ["2026-09-14", "2026-09-07"],
+        }),
+      } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Dashboard />);
+    expect(await screen.findByText("Fridge: Cream cakes")).toBeInTheDocument();
+    const creamCard = screen.getByText("Fridge: Cream cakes").closest("article")!;
+    expect(creamCard).toHaveTextContent("Time above 5°C: at least 30 min");
+    expect(creamCard).toHaveTextContent("Recovery not confirmed.");
+
+    await user.click(screen.getByRole("button", { name: "Older week" }));
+    expect(await screen.findByText(/7 Sep – 13 Sep 2026/)).toBeInTheDocument();
+    const olderCard = screen.getByText("Fridge: Cream cakes").closest("article")!;
+    expect(olderCard).toHaveTextContent("First detected: 7 Sep, 06:00");
+    expect(olderCard).toHaveTextContent("Isolated high reading");
+    expect(olderCard).toHaveTextContent("Recovery confirmed.");
+    expect(olderCard).not.toHaveTextContent("at least 30 min");
+  });
+
+  it("filters cards and KPI counts by branch without fetching again", async () => {
+    const user = userEvent.setup();
+    mockOverview(sampleOverview());
+    render(<Dashboard />);
+    expect(await screen.findAllByRole("article")).toHaveLength(5);
+
+    const branchFilter = screen.getByRole("combobox", { name: "Branch" });
+    expect(branchFilter).toHaveDisplayValue("All branches");
+    expect(Array.from((branchFilter as HTMLSelectElement).options).map((o) => o.text)).toEqual([
+      "All branches",
+      "Haifa",
+      "Jerusalem",
+      "Rishon LeZion",
+      "Tel Aviv",
+    ]);
+
+    const fetchMock = vi.mocked(fetch);
+    const callsBeforeFilter = fetchMock.mock.calls.length;
+    await user.selectOptions(branchFilter, "Tel Aviv");
+    expect(fetchMock.mock.calls.length).toBe(callsBeforeFilter);
+
+    const cards = screen.getAllByRole("article");
+    expect(cards).toHaveLength(2);
+    expect(cards[0]).toHaveTextContent("Display 2");
+    expect(cards[1]).toHaveTextContent("Walk-in");
+    expect(screen.getByRole("heading", { name: /Tel Aviv/ })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /Haifa/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /Rishon LeZion/ })).not.toBeInTheDocument();
+
+    const summary = screen.getByLabelText("Week summary");
+    expect(kpiValue(summary, "Total fridges")).toBe("2");
+    expect(kpiValue(summary, "Sustained high temps")).toBe("0");
+    expect(kpiValue(summary, "No readings")).toBe("0");
+
+    await user.selectOptions(branchFilter, "All branches");
+    expect(screen.getAllByRole("article")).toHaveLength(5);
+    const restored = screen.getByLabelText("Week summary");
+    expect(kpiValue(restored, "Total fridges")).toBe("5");
+    expect(kpiValue(restored, "Sustained high temps")).toBe("1");
+    expect(kpiValue(restored, "No readings")).toBe("0");
+  });
+
+  it("keeps the branch filter when switching weeks and handles an empty branch week", async () => {
+    const user = userEvent.setup();
+    const haifa = sampleOverview().fridges.find((item) => item.branch === "Haifa")!;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("week=2026-09-07")) {
+        return {
+          ok: true,
+          json: async () => ({
+            weeks: ["2026-09-14", "2026-09-07"],
+            week: {
+              start: "2026-09-07 00:00:00",
+              end: "2026-09-14 00:00:00",
+              monday: "2026-09-07",
+            },
+            fridges: [haifa],
+          }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          ...sampleOverview(),
+          weeks: ["2026-09-14", "2026-09-07"],
+        }),
+      } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Dashboard />);
+    await screen.findByRole("combobox", { name: "Branch" });
+    await user.selectOptions(screen.getByRole("combobox", { name: "Branch" }), "Tel Aviv");
+    expect(screen.getAllByRole("article")).toHaveLength(2);
+
+    await user.click(screen.getByRole("button", { name: "Older week" }));
+    expect(await screen.findByText(/7 Sep – 13 Sep 2026/)).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Branch" })).toHaveDisplayValue("Tel Aviv");
+    expect(screen.getByText("No fridge readings for this branch this week.")).toBeInTheDocument();
+    expect(screen.queryByRole("article")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /Haifa/ })).not.toBeInTheDocument();
+    const summary = screen.getByLabelText("Week summary");
+    expect(within(summary).getAllByText("0")).toHaveLength(3);
   });
 });

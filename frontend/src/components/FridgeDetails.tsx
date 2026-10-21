@@ -146,10 +146,9 @@ export function FridgeDetails({
         <button
           type="button"
           className="fridge-details__back"
-          aria-label="Back to Dashboard"
           onClick={onBack}
         >
-          ← Dashboard
+          ← Back
         </button>
         <p className="fridge-details__city">{fridge.branch}</p>
         <h1 className="fridge-details__title">{fridge.name}</h1>

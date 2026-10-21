@@ -168,6 +168,18 @@ describe("WeeklyUpload", () => {
 
     render(<WeeklyUpload />);
     await screen.findByText("Weekly Upload");
+    expect(
+      screen.getByText(
+        "Upload this week's temperature files, then review them before importing.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Excel files (.xlsx) only. Make sure each file is assigned to the correct fridge.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/The app matches each file/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Logger codes in the file name/)).not.toBeInTheDocument();
 
     await selectFiles([xlsx("TL-0417_week.xlsx"), xlsx("mystery.xlsx")]);
 

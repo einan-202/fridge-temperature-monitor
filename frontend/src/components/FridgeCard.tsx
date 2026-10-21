@@ -1,7 +1,8 @@
-import type { FridgeOverview } from "../types/overview";
+import { cardEventSummary } from "../dashboard/cardEvent";
 import { deriveFinding } from "../dashboard/findings";
 import { formatTemperatureC } from "../dashboard/format";
 import { loggerCodesLabel } from "../dashboard/sort";
+import type { FridgeOverview } from "../types/overview";
 import { FridgeIcon, StatusIcon } from "./icons";
 
 interface FridgeCardProps {
@@ -13,6 +14,7 @@ export function FridgeCard({ fridge, onOpen }: FridgeCardProps) {
   const finding = deriveFinding(fridge);
   const temperature = formatTemperatureC(fridge.max_temperature_c);
   const loggers = loggerCodesLabel(fridge);
+  const event = cardEventSummary(fridge);
 
   return (
     <article
@@ -59,7 +61,24 @@ export function FridgeCard({ fridge, onOpen }: FridgeCardProps) {
         <StatusIcon tone={finding.tone} className="fridge-card__status-icon" />
         <div className="fridge-card__finding-text">
           <p className="fridge-card__headline">{finding.headline}</p>
-          {finding.detail ? (
+          {event ? (
+            <div className="fridge-card__event">
+              <p>
+                First detected: {event.startLabel}
+                {event.showLogger ? ` (${event.loggerCode})` : ""}
+              </p>
+              {event.isolated ? <p>Isolated high reading</p> : null}
+              {event.durationLabel ? (
+                <p>Time above 5°C: {event.durationLabel}</p>
+              ) : null}
+              {event.recoveryLabel ? <p>{event.recoveryLabel}</p> : null}
+              {event.moreCount > 0 ? (
+                <p>
+                  {event.moreCount} more {event.moreCount === 1 ? "event" : "events"}
+                </p>
+              ) : null}
+            </div>
+          ) : finding.detail ? (
             <p className="fridge-card__detail">{finding.detail}</p>
           ) : null}
         </div>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fridge } from "../test/fixtures";
-import { groupByCity, loggerCodesLabel, sortFridges } from "./sort";
+import { groupByCity, loggerCodesLabel, sortFridges, uniqueBranches } from "./sort";
 
 describe("sortFridges", () => {
   it("sorts by city A–Z, then numeric logger, then fridge name", () => {
@@ -169,6 +169,18 @@ describe("sortFridges", () => {
       "Later",
     ]);
     expect(loggerCodesLabel(multi)).toBe("TL-0200, TL-0900");
+  });
+});
+
+describe("uniqueBranches", () => {
+  it("returns sorted unique branch names from fridge data", () => {
+    expect(
+      uniqueBranches([
+        fridge({ fridge_id: 1, branch: "Tel Aviv", name: "Walk-in" }),
+        fridge({ fridge_id: 2, branch: "Haifa", name: "Dairy" }),
+        fridge({ fridge_id: 3, branch: "Tel Aviv", name: "Display 2" }),
+      ]),
+    ).toEqual(["Haifa", "Tel Aviv"]);
   });
 });
 

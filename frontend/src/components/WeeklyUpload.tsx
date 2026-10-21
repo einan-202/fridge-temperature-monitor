@@ -774,9 +774,7 @@ export function WeeklyUpload() {
       <header className="weekly__header">
         <h1 className="weekly__title">Weekly Upload</h1>
         <p className="weekly__subtitle">
-          Every week: upload new logger Excel files. The app matches each file to a
-          logger and fridge using what is already saved — you only fix files that need
-          attention.
+          Upload this week's temperature files, then review them before importing.
         </p>
       </header>
 
@@ -837,8 +835,7 @@ export function WeeklyUpload() {
             Select files
           </h2>
           <p className="weekly-card__help">
-            Choose original .xlsx logger files. Logger codes in the file name are
-            suggestions only — confirm them during review.
+            Excel files (.xlsx) only. Make sure each file is assigned to the correct fridge.
           </p>
           <input
             ref={fileInputRef}

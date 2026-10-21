@@ -13,12 +13,12 @@ export function SummaryCounters({ counts }: SummaryCountersProps) {
           <FridgeIcon />
         </span>
         <div className="summary-counters__text">
-          <div className="summary-counters__value">{counts.fridgesWithData}</div>
+          <div className="summary-counters__value">{counts.totalFridges}</div>
           <div className="summary-counters__label summary-counters__label--full">
-            Fridges with data
+            Total fridges
           </div>
           <div className="summary-counters__label summary-counters__label--short">
-            Fridges
+            Total
           </div>
         </div>
       </div>
@@ -28,13 +28,13 @@ export function SummaryCounters({ counts }: SummaryCountersProps) {
         </span>
         <div className="summary-counters__text">
           <div className="summary-counters__value">
-            {counts.extendedHighTemperature}
+            {counts.sustainedHighTemps}
           </div>
           <div className="summary-counters__label summary-counters__label--full">
-            Fridges with extended high temperatures
+            Sustained high temps
           </div>
           <div className="summary-counters__label summary-counters__label--short">
-            Extended highs
+            Sustained
           </div>
         </div>
       </div>
@@ -44,13 +44,13 @@ export function SummaryCounters({ counts }: SummaryCountersProps) {
         </span>
         <div className="summary-counters__text">
           <div className="summary-counters__value">
-            {counts.incompleteRecords}
+            {counts.noReadings}
           </div>
           <div className="summary-counters__label summary-counters__label--full">
-            Fridges with incomplete records
+            No readings
           </div>
           <div className="summary-counters__label summary-counters__label--short">
-            Data issues
+            No readings
           </div>
         </div>
       </div>

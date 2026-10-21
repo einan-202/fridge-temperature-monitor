@@ -532,7 +532,8 @@ describe("FridgeDetails", () => {
     const onBack = vi.fn();
     render(<FridgeDetails fridge={creamFridge()} {...weekProps} onBack={onBack} />);
     await screen.findByRole("heading", { name: "Cream cakes" });
-    await user.click(screen.getByRole("button", { name: "Back to Dashboard" }));
+    expect(screen.getByRole("button", { name: "← Back" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "← Back" }));
     expect(onBack).toHaveBeenCalledTimes(1);
   });
 });

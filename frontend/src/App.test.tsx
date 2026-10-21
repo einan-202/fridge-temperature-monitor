@@ -62,7 +62,7 @@ describe("App fridge details navigation", () => {
     const details = detailsHeading.closest(".fridge-details") as HTMLElement;
     expect(within(details).getByText(/7 Sep – 13 Sep 2026/)).toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "Main" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Back to Dashboard" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "← Back" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Fridge Details" })).not.toBeInTheDocument();
 
     await waitFor(() => {
@@ -83,7 +83,7 @@ describe("App fridge details navigation", () => {
       fetchMock.mock.calls.filter((c) => String(c[0]).startsWith("/api/series/")),
     ).toHaveLength(1);
 
-    await user.click(screen.getByRole("button", { name: "Back to Dashboard" }));
+    await user.click(screen.getByRole("button", { name: "← Back" }));
     const dashboardTitle = screen.getByRole("heading", {
       name: "Fridge Temperature Monitor",
     });
@@ -94,5 +94,38 @@ describe("App fridge details navigation", () => {
         name: "View details for Cream cakes, Rishon LeZion",
       }),
     ).toBeInTheDocument();
+  });
+
+  it("keeps the selected branch after returning from fridge details", async () => {
+    const user = userEvent.setup();
+    mockDashboardAndSeries();
+    render(<App />);
+
+    await screen.findByRole("combobox", { name: "Branch" });
+    await user.selectOptions(screen.getByRole("combobox", { name: "Branch" }), "Rishon LeZion");
+    expect(screen.getAllByRole("article")).toHaveLength(1);
+    expect(screen.getByRole("heading", { name: /Rishon LeZion/ })).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("article", {
+        name: "View details for Cream cakes, Rishon LeZion",
+      }),
+    );
+    expect(await screen.findByRole("button", { name: "← Back" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "← Back" }));
+    const dashboard = screen
+      .getByRole("heading", { name: "Fridge Temperature Monitor" })
+      .closest(".dashboard") as HTMLElement;
+    expect(within(dashboard).getByRole("combobox", { name: "Branch" })).toHaveDisplayValue(
+      "Rishon LeZion",
+    );
+    expect(within(dashboard).getAllByRole("article")).toHaveLength(1);
+    expect(
+      within(dashboard).getByRole("article", {
+        name: "View details for Cream cakes, Rishon LeZion",
+      }),
+    ).toBeInTheDocument();
+    expect(within(dashboard).queryByRole("heading", { name: /Tel Aviv/ })).not.toBeInTheDocument();
   });
 });

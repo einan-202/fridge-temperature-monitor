@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { OverviewLoadError, OVERVIEW_RETRY_DELAYS_MS, sleep } from "../api/loadError";
 import { fetchOverview } from "../api/overview";
 import { summarizeFridges } from "../dashboard/findings";
-import { groupByCity } from "../dashboard/sort";
+import { groupByCity, uniqueBranches } from "../dashboard/sort";
 import type { FridgeOverview, OverviewResponse } from "../types/overview";
+import { BranchFilter } from "./BranchFilter";
 import { DashboardSkeleton } from "./DashboardSkeleton";
 import { FridgeCard } from "./FridgeCard";
 import { SummaryCounters } from "./SummaryCounters";
@@ -27,6 +28,7 @@ interface DashboardProps {
 
 export function Dashboard({ onOpenFridge }: DashboardProps = {}) {
   const [week, setWeek] = useState<string | null>(null);
+  const [branch, setBranch] = useState("");
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const requestId = useRef(0);
 
@@ -71,6 +73,13 @@ export function Dashboard({ onOpenFridge }: DashboardProps = {}) {
     void load(monday);
   };
 
+  const allFridges = state.status === "ready" ? state.data.fridges : [];
+  const branches = uniqueBranches(allFridges);
+  const visibleFridges = branch
+    ? allFridges.filter((fridge) => fridge.branch === branch)
+    : allFridges;
+  const showBranchFilter = Boolean(branch) || branches.length > 0;
+
   return (
     <div className="dashboard" aria-busy={state.status === "loading"}>
       <header className="dashboard__header">
@@ -88,13 +97,22 @@ export function Dashboard({ onOpenFridge }: DashboardProps = {}) {
           )}
         </div>
         {state.status === "ready" && state.data.week ? (
-          <WeekSelector
-            weeks={state.data.weeks}
-            monday={week}
-            weekStart={state.data.week.start}
-            weekEnd={state.data.week.end}
-            onChange={onWeekChange}
-          />
+          <div className="dashboard__controls">
+            <WeekSelector
+              weeks={state.data.weeks}
+              monday={week}
+              weekStart={state.data.week.start}
+              weekEnd={state.data.week.end}
+              onChange={onWeekChange}
+            />
+            {showBranchFilter ? (
+              <BranchFilter
+                branches={branches}
+                value={branch}
+                onChange={setBranch}
+              />
+            ) : null}
+          </div>
         ) : state.status === "loading" ? (
           <div className="skeleton skeleton--week" />
         ) : null}
@@ -130,46 +148,52 @@ export function Dashboard({ onOpenFridge }: DashboardProps = {}) {
 
       {state.status === "ready" && state.data.fridges.length > 0 ? (
         <>
-          <SummaryCounters counts={summarizeFridges(state.data.fridges)} />
-          <div className="dashboard__groups">
-            {groupByCity(state.data.fridges).map((group) => (
-              <section
-                key={group.city}
-                className={
-                  group.fridges.length > 1
-                    ? "city-group city-group--wide"
-                    : "city-group"
-                }
-              >
-                <h2 className="city-group__heading">
-                  {group.city}{" "}
-                  <span className="city-group__count">
-                    ({group.fridges.length}{" "}
-                    {group.fridges.length === 1 ? "fridge" : "fridges"})
-                  </span>
-                </h2>
-                <div className="city-group__grid">
-                  {group.fridges.map((fridge) => (
-                    <FridgeCard
-                      key={fridge.fridge_id}
-                      fridge={fridge}
-                      onOpen={
-                        onOpenFridge && week && state.data.week
-                          ? () =>
-                              onOpenFridge({
-                                fridge,
-                                week,
-                                weekStart: state.data.week!.start,
-                                weekEnd: state.data.week!.end,
-                              })
-                          : undefined
-                      }
-                    />
-                  ))}
-                </div>
-              </section>
-            ))}
-          </div>
+          <SummaryCounters counts={summarizeFridges(visibleFridges)} />
+          {visibleFridges.length === 0 ? (
+            <div className="dashboard__status" role="status">
+              <p>No fridge readings for this branch this week.</p>
+            </div>
+          ) : (
+            <div className="dashboard__groups">
+              {groupByCity(visibleFridges).map((group) => (
+                <section
+                  key={group.city}
+                  className={
+                    group.fridges.length > 1
+                      ? "city-group city-group--wide"
+                      : "city-group"
+                  }
+                >
+                  <h2 className="city-group__heading">
+                    {group.city}{" "}
+                    <span className="city-group__count">
+                      ({group.fridges.length}{" "}
+                      {group.fridges.length === 1 ? "fridge" : "fridges"})
+                    </span>
+                  </h2>
+                  <div className="city-group__grid">
+                    {group.fridges.map((fridge) => (
+                      <FridgeCard
+                        key={fridge.fridge_id}
+                        fridge={fridge}
+                        onOpen={
+                          onOpenFridge && week && state.data.week
+                            ? () =>
+                                onOpenFridge({
+                                  fridge,
+                                  week,
+                                  weekStart: state.data.week!.start,
+                                  weekEnd: state.data.week!.end,
+                                })
+                            : undefined
+                        }
+                      />
+                    ))}
+                  </div>
+                </section>
+              ))}
+            </div>
+          )}
           <p className="dashboard__footnote">
             This is a weekly retrospective from recorded readings. It does not
             show live fridge status, and periods without nearby readings are

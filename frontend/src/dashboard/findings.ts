@@ -19,17 +19,17 @@ export interface CardFinding {
 }
 
 /**
- * Fields the mockup wants that /api/overview does not currently provide.
- * Kept here so tests and the completion report stay aligned.
+ * Fields the mockup wants that /api/overview still does not provide.
  */
 export const OVERVIEW_MISSING_FOR_CARDS = [
-  "excursions[].start (First detected)",
-  "excursions[].end / recovery time",
-  "excursions[].duration_minutes / duration_label",
-  "excursions[].ended_by (beyond aggregated isolated_spike_count)",
   "gaps[].start / gaps[].end / gaps[].minutes",
   "invalid_readings[].measured_at / raw_value",
 ] as const;
+
+function invalidReadingHeadline(count: number): string {
+  const noun = count === 1 ? "reading" : "readings";
+  return `Data issue: ${count} invalid ${noun}`;
+}
 
 export function deriveFinding(fridge: FridgeOverview): CardFinding {
   // Priority: sustained high temp > recovered spike > unconfirmed >
@@ -37,8 +37,8 @@ export function deriveFinding(fridge: FridgeOverview): CardFinding {
   if (fridge.sustained_count > 0) {
     return {
       tone: "red",
-      headline: "Temperature stayed above 5°C",
-      detail: fridge.warming_count > 0 ? "Temperature rose gradually." : null,
+      headline: "High-temperature event",
+      detail: fridge.warming_count > 0 ? "Gradual warming detected." : null,
     };
   }
 
@@ -61,22 +61,22 @@ export function deriveFinding(fridge: FridgeOverview): CardFinding {
   if (fridge.warming_count > 0 && fridge.result === "warming_observed") {
     return {
       tone: "amber",
-      headline: "Temperature rose gradually",
+      headline: "Gradual warming detected",
       detail: null,
     };
   }
 
   if (fridge.invalid_count > 0) {
     return {
-      tone: "amber",
-      headline: "One invalid reading",
+      tone: "neutral",
+      headline: invalidReadingHeadline(fridge.invalid_count),
       detail: null,
     };
   }
 
   if (fridge.gap_count > 0) {
     return {
-      tone: "amber",
+      tone: "neutral",
       headline: "Some readings are missing",
       detail: null,
     };
@@ -104,7 +104,7 @@ export function deriveFinding(fridge: FridgeOverview): CardFinding {
   if (fridge.result === "warming_observed") {
     return {
       tone: "amber",
-      headline: "Temperature rose gradually",
+      headline: "Gradual warming detected",
       detail: null,
     };
   }
@@ -118,17 +118,31 @@ export function deriveFinding(fridge: FridgeOverview): CardFinding {
 }
 
 export interface SummaryCounts {
-  fridgesWithData: number;
-  extendedHighTemperature: number;
-  incompleteRecords: number;
+  totalFridges: number;
+  sustainedHighTemps: number;
+  noReadings: number;
 }
 
-/** Unique-fridge counters derived from overview results (not events). */
+function uniqueFridges(fridges: FridgeOverview[]): FridgeOverview[] {
+  const byId = new Map<number, FridgeOverview>();
+  for (const fridge of fridges) {
+    if (!byId.has(fridge.fridge_id)) byId.set(fridge.fridge_id, fridge);
+  }
+  return [...byId.values()];
+}
+
+function hasRecordedReadings(fridge: FridgeOverview): boolean {
+  if (fridge.invalid_count > 0) return true;
+  if (fridge.series.some((item) => item.invalid_count > 0)) return true;
+  return fridge.series.length > 0;
+}
+
+/** Unique physical-fridge counters from the selected overview slice. */
 export function summarizeFridges(fridges: FridgeOverview[]): SummaryCounts {
+  const unique = uniqueFridges(fridges);
   return {
-    fridgesWithData: fridges.filter((f) => f.series.length > 0).length,
-    extendedHighTemperature: fridges.filter((f) => f.sustained_count > 0).length,
-    incompleteRecords: fridges.filter((f) => f.result === "insufficient_data")
-      .length,
+    totalFridges: unique.length,
+    sustainedHighTemps: unique.filter((fridge) => fridge.sustained_count > 0).length,
+    noReadings: unique.filter((fridge) => !hasRecordedReadings(fridge)).length,
   };
 }

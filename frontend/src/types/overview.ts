@@ -12,6 +12,18 @@ export interface UnobservedPeriod {
   minutes: number;
 }
 
+/** One high-temperature event from GET /api/overview (already analysed per logger). */
+export interface OverviewExcursion {
+  logger_id: number;
+  logger_code: string;
+  start: string;
+  end: string;
+  kind: string;
+  duration_minutes: number;
+  duration_label: string;
+  ended_by: string;
+}
+
 export interface SeriesSummary {
   logger_id: number;
   code: string;
@@ -51,6 +63,7 @@ export interface FridgeOverview {
   gap_count: number;
   invalid_count: number;
   series: SeriesSummary[];
+  excursions: OverviewExcursion[];
 }
 
 export interface OverviewResponse {

@@ -47,6 +47,12 @@ export interface CityGroup {
   fridges: FridgeOverview[];
 }
 
+export function uniqueBranches(fridges: FridgeOverview[]): string[] {
+  return [...new Set(fridges.map((fridge) => fridge.branch))].sort((a, b) =>
+    a.localeCompare(b),
+  );
+}
+
 export function groupByCity(fridges: FridgeOverview[]): CityGroup[] {
   const sorted = sortFridges(fridges);
   const groups: CityGroup[] = [];

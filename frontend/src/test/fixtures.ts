@@ -1,4 +1,8 @@
-import type { FridgeOverview, OverviewResponse } from "../types/overview";
+import type {
+  FridgeOverview,
+  OverviewExcursion,
+  OverviewResponse,
+} from "../types/overview";
 
 function series(
   code: string,
@@ -46,7 +50,24 @@ export function fridge(
     gap_count: 0,
     invalid_count: 0,
     series: seriesOverride ?? [series("TL-0001")],
+    excursions: [],
     ...rest,
+  };
+}
+
+export function overviewExcursion(
+  overrides: Partial<OverviewExcursion> = {},
+): OverviewExcursion {
+  return {
+    logger_id: 1,
+    logger_code: "TL-0001",
+    start: "2026-09-14 06:15:00",
+    end: "2026-09-14 06:45:00",
+    kind: "sustained",
+    duration_minutes: 30,
+    duration_label: "at least 30 min",
+    ended_by: "end_of_data",
+    ...overrides,
   };
 }
 
@@ -80,6 +101,17 @@ export function sampleOverview(): OverviewResponse {
             warming_count: 1,
           }),
         ],
+        excursions: [
+          overviewExcursion({
+            logger_code: "TL-0388",
+            start: "2026-09-14 06:15:00",
+            end: "2026-09-14 06:45:00",
+            kind: "sustained",
+            duration_minutes: 30,
+            duration_label: "at least 30 min",
+            ended_by: "end_of_data",
+          }),
+        ],
       }),
       fridge({
         fridge_id: 2,
@@ -96,6 +128,17 @@ export function sampleOverview(): OverviewResponse {
             max_temperature_c: "9.40",
             isolated_spike_count: 1,
             excursion_count: 1,
+          }),
+        ],
+        excursions: [
+          overviewExcursion({
+            logger_code: "TL-0417",
+            start: "2026-09-14 06:15:00",
+            end: "2026-09-14 06:15:00",
+            kind: "isolated_spike",
+            duration_minutes: 0,
+            duration_label: "single reading",
+            ended_by: "recovered",
           }),
         ],
       }),
