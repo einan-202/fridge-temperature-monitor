@@ -15,10 +15,12 @@ from app.analysis import (
     MIN_COVERAGE,
     WEEK_START_DAY,
     Coverage,
+    Excursion,
     FridgeWeekResult,
     Reading,
     SeriesAnalysis,
     analyze_series,
+    duration_label,
     fridge_week_result,
     week_bounds,
     week_monday,
@@ -34,6 +36,20 @@ def _dec(value: Decimal | None) -> str | None:
 
 def _dt(value: datetime | None) -> str | None:
     return value.isoformat(sep=" ") if value is not None else None
+
+
+def _overview_excursion(excursion: Excursion, logger_id: int, logger_code: str) -> dict:
+    """Serialize one already-detected excursion for GET /api/overview."""
+    return {
+        "logger_id": logger_id,
+        "logger_code": logger_code,
+        "start": _dt(excursion.start),
+        "end": _dt(excursion.end),
+        "kind": excursion.kind,
+        "duration_minutes": excursion.duration_minutes,
+        "duration_label": duration_label(excursion),
+        "ended_by": excursion.ended_by,
+    }
 
 
 def list_weeks_with_readings(session: Session) -> list[date]:
@@ -190,6 +206,14 @@ def build_overview(session: Session, week: date | datetime | None = None) -> dic
             logger = loggers_by_id[logger_id]
             meta.append({"logger_id": logger_id, "code": logger.code})
 
+        excursions: list[dict] = []
+        for analysis, info in zip(analyses, meta):
+            for excursion in analysis.excursions:
+                excursions.append(
+                    _overview_excursion(excursion, info["logger_id"], info["code"])
+                )
+        excursions.sort(key=lambda item: (item["start"] or "", item["logger_id"]))
+
         if not analyses:
             # Fridge exists but has no readings in this week.
             result = FridgeWeekResult(
@@ -221,7 +245,9 @@ def build_overview(session: Session, week: date | datetime | None = None) -> dic
                 series_meta=meta,
             )
 
-        fridge_entries.append(_fridge_entry(fridge, result, loggers_by_id))
+        fridge_entries.append(
+            _fridge_entry(fridge, result, loggers_by_id, excursions=excursions)
+        )
 
     # Sort: excursions first, then warming, then insufficient, then no_excursion.
     order = {
@@ -248,7 +274,12 @@ def build_overview(session: Session, week: date | datetime | None = None) -> dic
     }
 
 
-def _fridge_entry(fridge: Fridge, result, loggers_by_id: dict) -> dict:
+def _fridge_entry(
+    fridge: Fridge,
+    result,
+    loggers_by_id: dict,
+    excursions: list[dict] | None = None,
+) -> dict:
     cov = result.coverage
     max_logger_code = None
     if result.max_temperature_logger_id is not None:
@@ -302,6 +333,7 @@ def _fridge_entry(fridge: Fridge, result, loggers_by_id: dict) -> dict:
         "gap_count": result.gap_count,
         "invalid_count": result.invalid_count,
         "series": series_out,
+        "excursions": list(excursions or []),
     }
 
 
@@ -349,8 +381,6 @@ def build_series_detail(
     analysis, rows = analyze_series_in_week(
         session, logger_id, fridge_id, week_start_at, week_end_at
     )
-
-    from app.analysis import duration_label  # local import keeps payload helpers together
 
     return {
         "logger_id": logger_id,

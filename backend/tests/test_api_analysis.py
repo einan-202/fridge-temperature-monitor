@@ -94,11 +94,29 @@ def test_overview_defaults_to_latest_week_golden(api_client, db_session):
     assert cream["sustained_count"] == 1
     assert cream["warming_count"] == 1
     assert cream["series"][0]["code"] == "TL-0388"
+    assert cream["excursion_count"] == len(cream["excursions"]) == 1
+    assert cream["excursions"][0]["logger_code"] == "TL-0388"
+    assert cream["excursions"][0]["kind"] == "sustained"
+    assert cream["excursions"][0]["start"] == "2026-09-14 06:15:00"
+    assert cream["excursions"][0]["ended_by"] == "end_of_data"
+    assert cream["excursions"][0]["duration_label"] == "at least 30 min"
 
     walk_in = by_key[("Tel Aviv", "Walk-in")]
     assert walk_in["result"] == "excursion_observed"
     assert walk_in["isolated_spike_count"] == 1
     assert walk_in["series"][0]["code"] == "TL-0417"
+    assert walk_in["excursions"] == [
+        {
+            "logger_id": walk_in["series"][0]["logger_id"],
+            "logger_code": "TL-0417",
+            "start": "2026-09-14 06:15:00",
+            "end": "2026-09-14 06:15:00",
+            "kind": "isolated_spike",
+            "duration_minutes": 0,
+            "duration_label": "single reading",
+            "ended_by": "recovered",
+        }
+    ]
 
     display = by_key[("Tel Aviv", "Display 2")]
     assert display["result"] == "insufficient_data"
@@ -112,10 +130,150 @@ def test_overview_defaults_to_latest_week_golden(api_client, db_session):
     jerusalem = by_key[("Jerusalem", "Dairy")]
     assert jerusalem["result"] == "insufficient_data"
     assert jerusalem["gap_count"] == 1
+    assert jerusalem["excursions"] == []
 
     haifa = by_key[("Haifa", "Dairy")]
     assert haifa["result"] == "insufficient_data"
     assert haifa["invalid_count"] == 1
+    assert haifa["excursions"] == []
+
+
+def _reading(session, logger, fridge, at, temp, row=1):
+    session.add(
+        TemperatureReading(
+            logger_id=logger.id,
+            fridge_id=fridge.id,
+            measured_at=at,
+            temperature_c=None if temp is None else Decimal(str(temp)),
+            raw_value=None if temp is None else str(temp),
+            raw_timestamp=at.strftime("%d/%m/%Y %H:%M"),
+            source_file="test",
+            source_row=row,
+        )
+    )
+
+
+def _overview_fridge(client, branch, name, week):
+    body = client.get("/api/overview", params={"week": week}).json()
+    return next(f for f in body["fridges"] if f["branch"] == branch and f["name"] == name)
+
+
+def test_overview_excursions_recovered_sustained(api_client, db_session):
+    client, session = api_client, db_session
+    logger = _logger(session, "TL-0512")
+    fridge = _fridge(session, "Jerusalem", "Dairy")
+    _reading(session, logger, fridge, datetime(2026, 10, 12, 6, 0), "4.0", 1)
+    _reading(session, logger, fridge, datetime(2026, 10, 12, 6, 15), "5.4", 2)
+    _reading(session, logger, fridge, datetime(2026, 10, 12, 6, 30), "5.6", 3)
+    _reading(session, logger, fridge, datetime(2026, 10, 12, 6, 45), "4.2", 4)
+    session.flush()
+
+    dairy = _overview_fridge(client, "Jerusalem", "Dairy", "2026-10-12")
+    assert dairy["excursion_count"] == 1
+    event = dairy["excursions"][0]
+    assert event["logger_code"] == "TL-0512"
+    assert event["kind"] == "sustained"
+    assert event["start"] == "2026-10-12 06:15:00"
+    assert event["end"] == "2026-10-12 06:30:00"
+    assert event["duration_minutes"] == 15
+    assert event["duration_label"] == "15 min"
+    assert event["ended_by"] == "recovered"
+
+
+def test_overview_excursions_end_of_data(api_client, db_session):
+    client, session = api_client, db_session
+    logger = _logger(session, "TL-0512")
+    fridge = _fridge(session, "Jerusalem", "Dairy")
+    _reading(session, logger, fridge, datetime(2026, 10, 12, 6, 0), "5.4", 1)
+    _reading(session, logger, fridge, datetime(2026, 10, 12, 6, 15), "5.8", 2)
+    session.flush()
+
+    dairy = _overview_fridge(client, "Jerusalem", "Dairy", "2026-10-12")
+    event = dairy["excursions"][0]
+    assert event["kind"] == "sustained"
+    assert event["ended_by"] == "end_of_data"
+    assert event["duration_label"] == "at least 15 min"
+    assert event["start"] == "2026-10-12 06:00:00"
+    assert event["end"] == "2026-10-12 06:15:00"
+
+
+def test_overview_excursions_end_of_period(api_client, db_session):
+    client, session = api_client, db_session
+    logger = _logger(session, "TL-0512")
+    fridge = _fridge(session, "Jerusalem", "Dairy")
+    _reading(session, logger, fridge, datetime(2026, 10, 18, 23, 45), "6.2", 1)
+    _reading(session, logger, fridge, datetime(2026, 10, 19, 6, 0), "4.0", 2)
+    session.flush()
+
+    dairy = _overview_fridge(client, "Jerusalem", "Dairy", "2026-10-12")
+    event = dairy["excursions"][0]
+    assert event["ended_by"] == "end_of_period"
+    assert event["kind"] == "unconfirmed"
+    assert event["start"] == "2026-10-18 23:45:00"
+    assert event["duration_label"] == "single reading"
+
+
+def test_overview_excursions_isolated_high_reading(api_client, db_session):
+    client, session = api_client, db_session
+    logger = _logger(session, "TL-0512")
+    fridge = _fridge(session, "Jerusalem", "Dairy")
+    _reading(session, logger, fridge, datetime(2026, 10, 12, 6, 0), "4.0", 1)
+    _reading(session, logger, fridge, datetime(2026, 10, 12, 6, 15), "9.4", 2)
+    _reading(session, logger, fridge, datetime(2026, 10, 12, 6, 30), "4.1", 3)
+    session.flush()
+
+    dairy = _overview_fridge(client, "Jerusalem", "Dairy", "2026-10-12")
+    event = dairy["excursions"][0]
+    assert event["kind"] == "isolated_spike"
+    assert event["ended_by"] == "recovered"
+    assert event["duration_minutes"] == 0
+    assert event["duration_label"] == "single reading"
+    assert event["start"] == event["end"] == "2026-10-12 06:15:00"
+
+
+def test_overview_excursions_keep_separate_logger_histories(api_client, db_session):
+    client, session = api_client, db_session
+    jerusalem = _fridge(session, "Jerusalem", "Dairy")
+    first = _logger(session, "TL-0512")
+    second = _logger(session, "TL-0388")
+    _reading(session, first, jerusalem, datetime(2026, 10, 12, 6, 0), "5.4", 1)
+    _reading(session, first, jerusalem, datetime(2026, 10, 12, 6, 15), "5.6", 2)
+    _reading(session, first, jerusalem, datetime(2026, 10, 12, 6, 30), "4.0", 3)
+    _reading(session, second, jerusalem, datetime(2026, 10, 12, 8, 0), "4.0", 1)
+    _reading(session, second, jerusalem, datetime(2026, 10, 12, 8, 15), "9.1", 2)
+    _reading(session, second, jerusalem, datetime(2026, 10, 12, 8, 30), "4.2", 3)
+    session.flush()
+
+    dairy = _overview_fridge(client, "Jerusalem", "Dairy", "2026-10-12")
+    assert dairy["excursion_count"] == 2
+    assert len(dairy["excursions"]) == 2
+    by_logger = {event["logger_code"]: event for event in dairy["excursions"]}
+    assert set(by_logger) == {"TL-0512", "TL-0388"}
+    assert by_logger["TL-0512"]["kind"] == "sustained"
+    assert by_logger["TL-0512"]["ended_by"] == "recovered"
+    assert by_logger["TL-0512"]["duration_label"] == "15 min"
+    assert by_logger["TL-0388"]["kind"] == "isolated_spike"
+    assert by_logger["TL-0388"]["duration_label"] == "single reading"
+    # Not merged into one run from 06:00 to 08:15.
+    assert by_logger["TL-0512"]["end"] == "2026-10-12 06:15:00"
+    assert by_logger["TL-0388"]["start"] == "2026-10-12 08:15:00"
+
+
+def test_overview_excursions_differ_by_selected_week(api_client, db_session):
+    client, session = api_client, db_session
+    logger = _logger(session, "TL-0388")
+    fridge = _fridge(session, "Rishon LeZion", "Cream cakes")
+    _reading(session, logger, fridge, datetime(2026, 10, 12, 6, 0), "5.5", 1)
+    _reading(session, logger, fridge, datetime(2026, 10, 12, 6, 15), "4.0", 2)
+    session.flush()
+
+    september = _overview_fridge(client, "Rishon LeZion", "Cream cakes", "2026-09-14")
+    october = _overview_fridge(client, "Rishon LeZion", "Cream cakes", "2026-10-12")
+    assert september["excursions"][0]["start"] == "2026-09-14 06:15:00"
+    assert september["excursions"][0]["ended_by"] == "end_of_data"
+    assert october["excursions"][0]["start"] == "2026-10-12 06:00:00"
+    assert october["excursions"][0]["kind"] == "isolated_spike"
+    assert october["excursions"][0]["ended_by"] == "recovered"
 
 
 def test_overview_week_param_selects_monday_week(api_client):
