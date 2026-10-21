@@ -92,6 +92,10 @@ docker compose exec frontend npm run build
 
 `npm test` runs the frontend Vitest suite. `npm run build` type-checks and builds the production frontend.
 
+## Developer Guide
+
+For a quick overview of the architecture, data flow, project structure, and where to make changes, see the [Developer Guide](docs/DEVELOPER_GUIDE.md).
+
 More design notes: [NOTES.md](NOTES.md). Plans: [docs/cursor/plan-phase-1-scaffold.md](docs/cursor/plan-phase-1-scaffold.md), [docs/cursor/plan-phase-2.md](docs/cursor/plan-phase-2.md), [docs/cursor/plan-phase-3.md](docs/cursor/plan-phase-3.md), [docs/cursor/plan-phase-4.md](docs/cursor/plan-phase-4.md).
 
 ## Sample Excel Files

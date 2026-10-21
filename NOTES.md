@@ -1,5 +1,7 @@
 # Engineering Notes — Fridge Temperature Monitor
 
+For the system architecture, data flow, and project structure, see the [Developer Guide](docs/DEVELOPER_GUIDE.md).
+
 ## 1. Time spent
 
 Approximately 19 hours, including planning, implementation, testing, debugging and documentation.
