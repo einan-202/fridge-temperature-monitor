@@ -1,4 +1,4 @@
-/** Types for POST /api/uploads/review and /import (weekly mode). */
+/** Types for POST /api/uploads/review and /import. */
 
 export type FileUploadStatus =
   | "ready"
@@ -68,6 +68,39 @@ export interface StagedMove {
   effective_at: string;
 }
 
+export interface LoggerUnitInfo {
+  code: string;
+  unit: "C" | "F" | null;
+  source: string;
+  is_new: boolean;
+  branch: string | null;
+}
+
+export interface HistoricalFridge {
+  branch: string;
+  name: string;
+}
+
+export interface HistoricalSummary {
+  rows_read?: number;
+  blank_rows?: number;
+  inserted?: number;
+  duplicates?: number;
+  conflicts?: number;
+  fridge_conflicts?: number;
+  rejected_total?: number;
+  invalid_values?: number;
+  loggers_created?: number;
+  fridges_created?: number;
+  assignments_created?: number;
+  new_logger_codes?: string[];
+  logger_units?: LoggerUnitInfo[];
+  fridges?: HistoricalFridge[];
+  source_units?: Record<string, string>;
+  unresolved_units?: LoggerUnitInfo[];
+  missing_source_units?: Array<{ code: string; branch: string | null }>;
+}
+
 export interface UploadOutcome {
   mode: string;
   dry_run: boolean;
@@ -80,6 +113,8 @@ export interface UploadOutcome {
   new_fridges_rejected: Array<Record<string, unknown>>;
   blocked: boolean;
   message: string | null;
+  logger_units?: LoggerUnitInfo[];
+  historical?: HistoricalSummary | null;
 }
 
 export interface LookupsResponse {

@@ -2,7 +2,7 @@
 
 ## 1. Time spent
 
-Approximately 15 hours so far, including planning, implementation, testing, debugging, and documentation.
+Approximately 18 hours so far, including planning, implementation, testing, debugging, and documentation.
 
 ## 2. Key decisions and trade-offs
 

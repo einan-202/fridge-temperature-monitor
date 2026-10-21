@@ -104,6 +104,11 @@ def test_invalid_logger_unit_mapping_is_rejected():
         ingest_rows(None, [], "f.xlsx", logger_units={"TL-1": "K"})
 
 
+def test_invalid_source_unit_mapping_is_rejected():
+    with pytest.raises(ValueError):
+        ingest_rows(None, [], "f.xlsx", source_units={"TL-1": "K"})
+
+
 def test_reader_combined_format_row_numbers_and_raw_cells(tmp_path):
     path = make_xlsx(tmp_path, ["logger", "BRANCH", " Fridge ", "time", "TEMP"], [["TL-1", "Haifa", "Dairy", "14/09/2026 06:00", 38.3]])
     (row,) = read_xlsx_rows(path)
@@ -550,6 +555,33 @@ def test_fahrenheit_logger_is_converted_and_existing_unit_is_not_overwritten(db_
     ingest_xlsx(db_session, path2, logger_units={"TL-F": "C"})
     db_session.refresh(tl_f)
     assert tl_f.unit == "F"
+
+
+@integration
+def test_source_units_convert_without_changing_native_unit(db_session, tmp_path):
+    create = make_xlsx(
+        tmp_path, COMBINED,
+        [["TL-0231", "Haifa", "Dairy", "2026-09-14 06:00", 38.0]],
+        "native.xlsx",
+    )
+    ingest_xlsx(db_session, create, logger_units={"TL-0231": "F"})
+    logger = db_session.scalar(select(Logger).where(Logger.code == "TL-0231"))
+    assert logger.unit == "F"
+
+    already_c = make_xlsx(
+        tmp_path, COMBINED,
+        [["TL-0231", "Haifa", "Dairy", "2026-09-14 07:00", 3.8]],
+        "celsius.xlsx",
+    )
+    ingest_xlsx(db_session, already_c, source_units={"TL-0231": "C"})
+    db_session.refresh(logger)
+    assert logger.unit == "F"
+    later = db_session.scalars(
+        select(TemperatureReading).where(
+            TemperatureReading.measured_at == datetime(2026, 9, 14, 7, 0)
+        )
+    ).one()
+    assert later.temperature_c == Decimal("3.80")
 
 
 @integration

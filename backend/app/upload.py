@@ -434,6 +434,43 @@ def unresolved_haifa_loggers(infos: Sequence[LoggerUnitInfo]) -> list[LoggerUnit
     return [i for i in infos if i.source == "unresolved" and i.is_new]
 
 
+def unique_historical_fridges(rows: Sequence[ParsedRow]) -> list[dict]:
+    """Distinct {branch, name} pairs from the sheet, first-seen spelling."""
+    seen: dict[tuple[str, str], dict[str, str]] = {}
+    for row in rows:
+        if row.is_blank:
+            continue
+        branch = normalize_name(row.branch_name)
+        name = normalize_name(row.fridge_name)
+        if not branch or not name:
+            continue
+        key = (name_key(branch), name_key(name))
+        if key not in seen:
+            seen[key] = {"branch": branch, "name": name}
+    return list(seen.values())
+
+
+def missing_historical_source_units(
+    infos: Sequence[LoggerUnitInfo],
+    source_units: Mapping[str, str] | None,
+) -> list[LoggerUnitInfo]:
+    """Loggers in the file that lack an explicit C/F source unit."""
+    provided = {name_key(k): v for k, v in (source_units or {}).items()}
+    missing: list[LoggerUnitInfo] = []
+    for info in infos:
+        if provided.get(name_key(info.code)) not in ("C", "F"):
+            missing.append(info)
+    return missing
+
+
+def historical_source_units_mapping(
+    infos: Sequence[LoggerUnitInfo],
+    source_units: Mapping[str, str],
+) -> dict[str, str]:
+    provided = {name_key(k): v for k, v in source_units.items()}
+    return {info.code: provided[name_key(info.code)] for info in infos}
+
+
 # --------------------------------------------------------------------------
 # Fridge-conflict pre-check (Phase 2 is silent on fridge-only differences)
 # --------------------------------------------------------------------------
@@ -1209,6 +1246,7 @@ def process_historical(
     logger_units_override: Mapping[str, str] | None,
     *,
     commit: bool,
+    source_units: Mapping[str, str] | None = None,
 ) -> UploadOutcome:
     outcome = UploadOutcome(mode="historical", dry_run=not commit)
     try:
@@ -1227,47 +1265,58 @@ def process_historical(
     infos = resolve_historical_logger_units(session, rows, logger_units_override)
     outcome.logger_units = infos
     unresolved = unresolved_haifa_loggers(infos)
+    missing_source = missing_historical_source_units(infos, source_units)
+    fridges = unique_historical_fridges(rows)
 
     units = historical_units_mapping(infos)
     fr = FileResult(
-        status="ready" if not unresolved else "needs_attention",
+        status="ready" if not unresolved and not missing_source else "needs_attention",
         file_index=file.index,
         filename=file.filename,
-        unit_converted=any(u == "F" for u in units.values()),
+        unit_converted=False,
     )
 
-    if unresolved:
-        names = ", ".join(u.code for u in unresolved)
-        fr.message = (
-            f"unit required for Haifa logger(s): {names}. "
-            "Supply logger_units before import."
-        )
+    if unresolved or missing_source:
+        messages = []
+        if unresolved:
+            names = ", ".join(u.code for u in unresolved)
+            messages.append(
+                f"unit required for Haifa logger(s): {names}. "
+                "Supply logger_units before import."
+            )
+        if missing_source:
+            names = ", ".join(u.code for u in missing_source)
+            messages.append(
+                f"source unit required for logger(s): {names}. "
+                "Supply source_units before import."
+            )
+        fr.message = " ".join(messages)
         fr.status = "needs_attention"
         outcome.files.append(fr)
         outcome.blocked = True
         outcome.message = fr.message
-        if commit:
-            # Import refuses entirely — write nothing.
-            return outcome
-        # Review still reports what would happen if units were supplied? Plan:
-        # review lists them unresolved; import refuses. For review counts,
-        # still run a dry ingest only when all units resolved. When unresolved,
-        # report unit list without ingesting.
         outcome.historical = {
             "rows_read": sum(1 for r in rows if not r.is_blank),
             "loggers": [logger_unit_to_dict(i) for i in infos],
+            "fridges": fridges,
             "unresolved_units": [logger_unit_to_dict(u) for u in unresolved],
+            "missing_source_units": [
+                {"code": u.code, "branch": u.branch} for u in missing_source
+            ],
         }
         return outcome
+
+    source_map = historical_source_units_mapping(infos, source_units or {})
+    fr.unit_converted = any(u == "F" for u in source_map.values())
 
     conflicting = [
         info
         for info in infos
-        if layout.temp_unit and info.unit and info.unit != layout.temp_unit
+        if layout.temp_unit and source_map[info.code] != layout.temp_unit
     ]
     if conflicting:
         names = ", ".join(info.code for info in conflicting)
-        units_found = ", ".join(sorted({info.unit for info in conflicting}))
+        units_found = ", ".join(sorted({source_map[info.code] for info in conflicting}))
         fr.status = "invalid"
         fr.message = (
             f"temperature column {layout.temp_header!r} indicates {layout.temp_unit}, "
@@ -1286,6 +1335,7 @@ def process_historical(
             logger_units=units,
             header_temp_unit=layout.temp_unit,
             header_temp_label=layout.temp_header,
+            source_units=source_map,
         )
     except IngestError as exc:
         fr.status = "invalid"
@@ -1313,6 +1363,8 @@ def process_historical(
         "assignments_created": ingest.assignments_created,
         "new_logger_codes": new_logger_codes,
         "logger_units": [logger_unit_to_dict(i) for i in infos],
+        "fridges": fridges,
+        "source_units": source_map,
     }
     if commit:
         session.commit()
@@ -1786,16 +1838,24 @@ def parse_selections(raw: Any) -> dict:
     return data
 
 
-def parse_logger_units(raw: Any) -> dict[str, str]:
+def parse_unit_map(raw: Any, field: str) -> dict[str, str]:
     data = raw if not isinstance(raw, str) else parse_json_field(raw, {})
     if not isinstance(data, dict):
-        raise UploadError("logger_units must be a JSON object")
+        raise UploadError(f"{field} must be a JSON object")
     out: dict[str, str] = {}
     for key, value in data.items():
         if value not in ("C", "F"):
-            raise UploadError(f"logger unit must be 'C' or 'F', got {value!r}")
+            raise UploadError(f"{field} unit must be 'C' or 'F', got {value!r}")
         out[str(key)] = value
     return out
+
+
+def parse_logger_units(raw: Any) -> dict[str, str]:
+    return parse_unit_map(raw, "logger_units")
+
+
+def parse_source_units(raw: Any) -> dict[str, str]:
+    return parse_unit_map(raw, "source_units")
 
 
 def save_upload_to_temp(filename: str, data: bytes, directory: str) -> FileUpload:
@@ -1849,6 +1909,7 @@ def run_upload(
     moves: Sequence[StagedMove] | None = None,
     logger_units: Mapping[str, str] | None = None,
     new_fridges: Sequence[StagedNewFridge] | None = None,
+    source_units: Mapping[str, str] | None = None,
     commit: bool,
 ) -> UploadOutcome:
     mode = (mode or "weekly").strip().lower()
@@ -1859,7 +1920,11 @@ def run_upload(
         if len(files) != 1:
             raise UploadError("historical mode requires exactly one file")
         return process_historical(
-            session, files[0], logger_units, commit=commit
+            session,
+            files[0],
+            logger_units,
+            commit=commit,
+            source_units=source_units,
         )
 
     return process_weekly(

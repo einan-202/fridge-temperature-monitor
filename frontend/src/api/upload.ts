@@ -55,3 +55,51 @@ export function reviewWeeklyUpload(req: WeeklyUploadRequest): Promise<UploadOutc
 export function importWeeklyUpload(req: WeeklyUploadRequest): Promise<UploadOutcome> {
   return postUpload("/api/uploads/import", req);
 }
+
+export interface HistoricalUploadRequest {
+  file: File;
+  loggerUnits?: Record<string, "C" | "F">;
+  sourceUnits?: Record<string, "C" | "F">;
+}
+
+function buildHistoricalFormData(req: HistoricalUploadRequest): FormData {
+  const form = new FormData();
+  form.append("mode", "historical");
+  form.append("file", req.file, req.file.name);
+  form.append("logger_units", JSON.stringify(req.loggerUnits ?? {}));
+  form.append("source_units", JSON.stringify(req.sourceUnits ?? {}));
+  return form;
+}
+
+async function postHistoricalUpload(
+  path: string,
+  req: HistoricalUploadRequest,
+): Promise<UploadOutcome> {
+  const response = await fetch(path, {
+    method: "POST",
+    body: buildHistoricalFormData(req),
+  });
+  if (!response.ok) {
+    let detail = `Request failed with status ${response.status}`;
+    try {
+      const body = (await response.json()) as { detail?: string };
+      if (typeof body.detail === "string") detail = body.detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  return response.json() as Promise<UploadOutcome>;
+}
+
+export function reviewHistoricalUpload(
+  req: HistoricalUploadRequest,
+): Promise<UploadOutcome> {
+  return postHistoricalUpload("/api/uploads/review", req);
+}
+
+export function importHistoricalUpload(
+  req: HistoricalUploadRequest,
+): Promise<UploadOutcome> {
+  return postHistoricalUpload("/api/uploads/import", req);
+}

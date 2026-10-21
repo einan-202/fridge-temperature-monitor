@@ -245,7 +245,11 @@ function selectionsFromCodes(
   return next;
 }
 
-export function WeeklyUpload() {
+export function WeeklyUpload({
+  onOpenInitialSetup,
+}: {
+  onOpenInitialSetup?: () => void;
+} = {}) {
   const [phase, setPhase] = useState<Phase>("pick");
   const [files, setFiles] = useState<File[]>([]);
   const [unsupportedNote, setUnsupportedNote] = useState<string | null>(null);
@@ -789,8 +793,16 @@ export function WeeklyUpload() {
 
       {noLoggers ? (
         <div className="weekly__banner weekly__banner--amber" role="status">
-          No loggers are registered yet. Run <strong>Initial Setup</strong> (historical
-          import) once before weekly uploads.
+          No loggers are registered yet. Run <strong>Initial Setup</strong> once before
+          weekly uploads.
+          {onOpenInitialSetup ? (
+            <>
+              {" "}
+              <button type="button" className="weekly__link-btn" onClick={onOpenInitialSetup}>
+                Open Initial Setup
+              </button>
+            </>
+          ) : null}
         </div>
       ) : null}
 

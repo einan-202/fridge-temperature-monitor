@@ -394,11 +394,14 @@ describe("WeeklyUpload", () => {
 
   it("prompts for Initial Setup when no loggers exist", async () => {
     mockApi({ lookups: { loggers: [], fridges: [] } });
-    render(<WeeklyUpload />);
+    const onOpenInitialSetup = vi.fn();
+    render(<WeeklyUpload onOpenInitialSetup={onOpenInitialSetup} />);
     expect(
       await screen.findByText(/No loggers are registered yet/),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Review files" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Open Initial Setup" }));
+    expect(onOpenInitialSetup).toHaveBeenCalled();
   });
 
   it("prevents double import clicks", async () => {

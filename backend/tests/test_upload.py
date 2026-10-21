@@ -24,6 +24,9 @@ from app.upload import (
     parse_effective_at,
     parse_fridge_ref,
     parse_logger_units,
+    parse_source_units,
+    unique_historical_fridges,
+    missing_historical_source_units,
     parse_moves,
     parse_new_fridges,
     parse_new_loggers,
@@ -389,3 +392,32 @@ def test_parse_selections_and_moves_and_new_loggers():
 def test_parse_logger_units_rejects_bad_unit():
     with pytest.raises(Exception, match="C' or 'F"):
         parse_logger_units('{"TL-1": "K"}')
+
+
+def test_parse_source_units_rejects_bad_unit():
+    with pytest.raises(Exception, match="source_units"):
+        parse_source_units('{"TL-1": "K"}')
+    assert parse_source_units('{"TL-0231": "C"}') == {"TL-0231": "C"}
+
+
+def test_unique_historical_fridges_first_seen_spelling():
+    rows = [
+        ParsedRow(2, "TL-1", "Tel Aviv", "Walk-in", "2026-09-14 06:00", 4.0),
+        ParsedRow(3, "TL-1", "tel aviv", "Walk-in", "2026-09-14 06:15", 4.1),
+        ParsedRow(4, "TL-2", "Haifa", "Dairy", "2026-09-14 06:00", 3.8),
+        ParsedRow(5, "TL-2", "Haifa", "Dairy", "2026-09-14 06:15", 3.9),
+    ]
+    assert unique_historical_fridges(rows) == [
+        {"branch": "Tel Aviv", "name": "Walk-in"},
+        {"branch": "Haifa", "name": "Dairy"},
+    ]
+
+
+def test_missing_historical_source_units_lists_every_logger():
+    infos = resolve_historical_logger_units(
+        _EmptySession(),
+        [ParsedRow(2, "TL-0231", "Haifa", "Dairy", "2026-09-14 06:00", 3.8)],
+    )
+    missing = missing_historical_source_units(infos, None)
+    assert [i.code for i in missing] == ["TL-0231"]
+    assert missing_historical_source_units(infos, {"TL-0231": "C"}) == []

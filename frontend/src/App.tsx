@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { Dashboard, type OpenFridgeRequest } from "./components/Dashboard";
 import { FridgeDetails } from "./components/FridgeDetails";
+import { InitialSetup } from "./components/InitialSetup";
 import { WeeklyUpload } from "./components/WeeklyUpload";
 import "./App.css";
 
-type Page = "dashboard" | "weekly-upload";
+type Page = "dashboard" | "weekly-upload" | "initial-setup";
 
 function App() {
   const [page, setPage] = useState<Page>("dashboard");
@@ -15,7 +16,17 @@ function App() {
     setPage("dashboard");
   };
 
-  const showMainNav = page === "weekly-upload" || !detail;
+  const openWeeklyUpload = () => {
+    setDetail(null);
+    setPage("weekly-upload");
+  };
+
+  const openInitialSetup = () => {
+    setDetail(null);
+    setPage("initial-setup");
+  };
+
+  const showMainNav = page === "weekly-upload" || page === "initial-setup" || !detail;
 
   return (
     <div className={detail ? "app app--details" : "app"}>
@@ -39,17 +50,31 @@ function App() {
                 : "app-nav__btn"
             }
             aria-current={page === "weekly-upload" ? "page" : undefined}
-            onClick={() => {
-              setDetail(null);
-              setPage("weekly-upload");
-            }}
+            onClick={openWeeklyUpload}
           >
             Weekly Upload
+          </button>
+          <button
+            type="button"
+            className={
+              page === "initial-setup"
+                ? "app-nav__btn app-nav__btn--active"
+                : "app-nav__btn"
+            }
+            aria-current={page === "initial-setup" ? "page" : undefined}
+            onClick={openInitialSetup}
+          >
+            Initial Setup
           </button>
         </nav>
       ) : null}
       {page === "weekly-upload" ? (
-        <WeeklyUpload />
+        <WeeklyUpload onOpenInitialSetup={openInitialSetup} />
+      ) : page === "initial-setup" ? (
+        <InitialSetup
+          onOpenDashboard={openDashboard}
+          onOpenWeeklyUpload={openWeeklyUpload}
+        />
       ) : (
         <>
           <div

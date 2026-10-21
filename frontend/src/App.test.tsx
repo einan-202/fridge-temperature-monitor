@@ -38,6 +38,18 @@ function mockDashboardAndSeries() {
 }
 
 describe("App fridge details navigation", () => {
+  it("opens Initial Setup from the main nav", async () => {
+    const user = userEvent.setup();
+    mockDashboardAndSeries();
+    render(<App />);
+    await screen.findByText("Fridge Temperature Monitor");
+    await user.click(screen.getByRole("button", { name: "Initial Setup" }));
+    expect(screen.getByRole("heading", { name: "Initial Setup" })).toBeInTheDocument();
+    expect(
+      screen.getByText(/Load your existing temperature Excel file once/),
+    ).toBeInTheDocument();
+  });
+
   it("opens the clicked fridge, keeps the week, and does not fetch series from the dashboard", async () => {
     const user = userEvent.setup();
     const fetchMock = mockDashboardAndSeries();

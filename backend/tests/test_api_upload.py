@@ -78,6 +78,13 @@ def sample_path():
     return find_sample_file()
 
 
+def _src(*codes: str, **overrides: str) -> dict[str, str]:
+    """Explicit historical source units (C unless overridden)."""
+    data = {code: "C" for code in codes}
+    data.update(overrides)
+    return data
+
+
 def _post(client, path, *, mode="weekly", files=None, file=None, **fields):
     data = {"mode": mode}
     for key, value in fields.items():
@@ -113,11 +120,29 @@ def test_review_writes_nothing_historical(api_client, tmp_path):
         [["TL-1", "Tel Aviv", "Walk-in", "2026-09-14 06:00", 4.0]],
     )
     before = counts(session)
+    preview = _post(
+        client,
+        "/api/uploads/review",
+        mode="historical",
+        file=("hist.xlsx", content),
+    )
+    assert preview.status_code == 200
+    preview_body = preview.json()
+    assert preview_body["dry_run"] is True
+    assert preview_body["blocked"] is True
+    assert preview_body["files"][0]["status"] == "needs_attention"
+    assert {u["code"] for u in preview_body["logger_units"]} == {"TL-1"}
+    assert preview_body["historical"]["fridges"] == [
+        {"branch": "Tel Aviv", "name": "Walk-in"}
+    ]
+    assert counts(session) == before
+
     response = _post(
         client,
         "/api/uploads/review",
         mode="historical",
         file=("hist.xlsx", content),
+        source_units=_src("TL-1"),
     )
     assert response.status_code == 200
     body = response.json()
@@ -140,7 +165,11 @@ def test_historical_rejects_fahrenheit_header_for_celsius_logger(api_client, sam
         [["TL-0512", "Jerusalem", "Dairy", "2026-09-14 16:00", 39]],
     )
     body = _post(
-        client, "/api/uploads/review", mode="historical", file=("h.xlsx", content)
+        client,
+        "/api/uploads/review",
+        mode="historical",
+        file=("h.xlsx", content),
+        source_units=_src("TL-0512"),
     ).json()
     assert body["files"][0]["status"] == "invalid"
     assert "indicates F" in body["files"][0]["message"]
@@ -212,8 +241,17 @@ def test_historical_review_then_import_approx_3000(api_client):
     client, session = api_client
     content = make_xlsx_bytes(COMBINED, _historical_3000_rows())
     before = counts(session)
+    source_units = _src(
+        "TL-0388", "TL-0417", "TL-0512", "TL-0600", **{"TL-0231": "F"}
+    )
 
-    review = _post(client, "/api/uploads/review", mode="historical", file=("hist.xlsx", content))
+    review = _post(
+        client,
+        "/api/uploads/review",
+        mode="historical",
+        file=("hist.xlsx", content),
+        source_units=source_units,
+    )
     assert review.status_code == 200
     rev = review.json()
     assert rev["dry_run"] is True
@@ -223,8 +261,23 @@ def test_historical_review_then_import_approx_3000(api_client):
     units = {u["code"]: u for u in rev["logger_units"]}
     assert units["TL-0231"]["unit"] == "F" and units["TL-0231"]["source"] == "known"
     assert units["TL-0600"]["unit"] == "C" and units["TL-0600"]["source"] == "default"
+    fridge_keys = {(f["branch"], f["name"]) for f in rev["historical"]["fridges"]}
+    assert fridge_keys == {
+        ("Haifa", "Dairy"),
+        ("Rishon LeZion", "Cream cakes"),
+        ("Tel Aviv", "Walk-in"),
+        ("Tel Aviv", "Display 2"),
+        ("Jerusalem", "Dairy"),
+        ("Ashdod", "Dairy"),
+    }
 
-    imported = _post(client, "/api/uploads/import", mode="historical", file=("hist.xlsx", content))
+    imported = _post(
+        client,
+        "/api/uploads/import",
+        mode="historical",
+        file=("hist.xlsx", content),
+        source_units=source_units,
+    )
     assert imported.status_code == 200
     body = imported.json()
     assert body["dry_run"] is False
@@ -267,10 +320,23 @@ def test_historical_haifa_unknown_requires_unit(api_client):
     unresolved = [u for u in review["logger_units"] if u["code"] == "TL-0777"]
     assert unresolved and unresolved[0]["source"] == "unresolved"
     assert review["blocked"] is True
+    missing = {u["code"] for u in review["historical"]["missing_source_units"]}
+    assert missing == {"TL-0231", "TL-0777"}
+    assert {f["branch"] for f in review["historical"]["fridges"]} == {"Haifa"}
 
     refused = _post(client, "/api/uploads/import", mode="historical", file=("h.xlsx", content))
     assert refused.status_code == 200
     assert refused.json()["blocked"] is True
+    assert counts(session)["temperature_readings"] == 0
+
+    still_blocked = _post(
+        client,
+        "/api/uploads/import",
+        mode="historical",
+        file=("h.xlsx", content),
+        logger_units={"TL-0777": "C"},
+    )
+    assert still_blocked.json()["blocked"] is True
     assert counts(session)["temperature_readings"] == 0
 
     ok = _post(
@@ -279,6 +345,7 @@ def test_historical_haifa_unknown_requires_unit(api_client):
         mode="historical",
         file=("h.xlsx", content),
         logger_units={"TL-0777": "C"},
+        source_units=_src("TL-0231", "TL-0777", **{"TL-0231": "F"}),
     )
     assert ok.status_code == 200
     assert ok.json()["blocked"] is False
@@ -291,6 +358,7 @@ def test_historical_haifa_unknown_requires_unit(api_client):
         "/api/uploads/review",
         mode="historical",
         file=("h.xlsx", content),
+        source_units=_src("TL-0231", "TL-0777", **{"TL-0231": "F"}),
     ).json()
     info = next(u for u in again["logger_units"] if u["code"] == "TL-0777")
     assert info["source"] == "known" and info["unit"] == "C" and info["is_new"] is False
@@ -308,6 +376,7 @@ def test_historical_override_unit(api_client):
         mode="historical",
         file=("o.xlsx", content),
         logger_units={"TL-0888": "F"},
+        source_units=_src("TL-0888", **{"TL-0888": "F"}),
     ).json()
     assert body["files"][0]["inserted"] == 1
     logger = session.scalars(select(Logger).where(Logger.code == "TL-0888")).one()
@@ -320,10 +389,22 @@ def test_historical_reimport_idempotent_and_value_conflict(api_client):
     client, session = api_client
     rows = [["TL-1", "Tel Aviv", "Walk-in", "2026-09-14 06:00", 4.0]]
     content = make_xlsx_bytes(COMBINED, rows)
-    first = _post(client, "/api/uploads/import", mode="historical", file=("a.xlsx", content)).json()
+    first = _post(
+        client,
+        "/api/uploads/import",
+        mode="historical",
+        file=("a.xlsx", content),
+        source_units=_src("TL-1"),
+    ).json()
     assert first["files"][0]["inserted"] == 1
 
-    second = _post(client, "/api/uploads/import", mode="historical", file=("a.xlsx", content)).json()
+    second = _post(
+        client,
+        "/api/uploads/import",
+        mode="historical",
+        file=("a.xlsx", content),
+        source_units=_src("TL-1"),
+    ).json()
     assert second["files"][0]["inserted"] == 0
     assert second["files"][0]["duplicates"] == 1
 
@@ -332,7 +413,11 @@ def test_historical_reimport_idempotent_and_value_conflict(api_client):
         [["TL-1", "Tel Aviv", "Walk-in", "2026-09-14 06:00", 9.9]],
     )
     third = _post(
-        client, "/api/uploads/import", mode="historical", file=("b.xlsx", conflict_content)
+        client,
+        "/api/uploads/import",
+        mode="historical",
+        file=("b.xlsx", conflict_content),
+        source_units=_src("TL-1"),
     ).json()
     assert third["files"][0]["inserted"] == 0
     assert len(third["files"][0]["conflicts"]) == 1
@@ -350,7 +435,13 @@ def test_historical_fridge_conflict_same_value(api_client):
             ["TL-1", "Tel Aviv", "Walk-in", "2026-09-14 06:15", 4.1],
         ],
     )
-    body = _post(client, "/api/uploads/import", mode="historical", file=("fc.xlsx", content)).json()
+    body = _post(
+        client,
+        "/api/uploads/import",
+        mode="historical",
+        file=("fc.xlsx", content),
+        source_units=_src("TL-1"),
+    ).json()
     fr = body["files"][0]
     assert fr["inserted"] == 2
     assert len(fr["fridge_conflicts"]) == 1
@@ -373,7 +464,13 @@ def test_historical_rejected_rows_still_import_valid(api_client):
             ["TL-1", "Tel Aviv", "Dairy", "2026-09-14 06:30", 4.2],
         ],
     )
-    body = _post(client, "/api/uploads/import", mode="historical", file=("r.xlsx", content)).json()
+    body = _post(
+        client,
+        "/api/uploads/import",
+        mode="historical",
+        file=("r.xlsx", content),
+        source_units=_src("TL-1"),
+    ).json()
     assert body["files"][0]["inserted"] == 2
     assert body["files"][0]["rejected_total"] == 1
     assert counts(session)["temperature_readings"] == 2
@@ -410,6 +507,7 @@ def test_historical_forced_failure_rolls_back(api_client, monkeypatch):
                 session,
                 mode="historical",
                 files=[FileUpload(0, "x.xlsx", path, len(content))],
+                source_units=_src("TL-1"),
             )
         finally:
             os.remove(path)
@@ -417,6 +515,188 @@ def test_historical_forced_failure_rolls_back(api_client, monkeypatch):
 
     session.rollback()
     assert counts(session) == before
+
+
+def test_historical_missing_source_units_block_import(api_client):
+    client, session = api_client
+    content = make_xlsx_bytes(
+        COMBINED,
+        [
+            ["TL-0231", "Haifa", "Dairy", "2026-09-14 06:00", 3.8],
+            ["TL-0388", "Rishon LeZion", "Cream cakes", "2026-09-14 06:00", 4.0],
+        ],
+    )
+    before = counts(session)
+    review = _post(
+        client, "/api/uploads/review", mode="historical", file=("h.xlsx", content)
+    ).json()
+    assert review["dry_run"] is True
+    assert review["blocked"] is True
+    assert {u["code"] for u in review["logger_units"]} == {"TL-0231", "TL-0388"}
+    assert {(f["branch"], f["name"]) for f in review["historical"]["fridges"]} == {
+        ("Haifa", "Dairy"),
+        ("Rishon LeZion", "Cream cakes"),
+    }
+    partial = _post(
+        client,
+        "/api/uploads/import",
+        mode="historical",
+        file=("h.xlsx", content),
+        source_units=_src("TL-0231", **{"TL-0231": "C"}),
+    ).json()
+    assert partial["blocked"] is True
+    assert counts(session) == before
+
+    bad = _post(
+        client,
+        "/api/uploads/import",
+        mode="historical",
+        file=("h.xlsx", content),
+        source_units={"TL-0231": "K", "TL-0388": "C"},
+    )
+    assert bad.status_code == 400
+    assert counts(session) == before
+
+
+def test_historical_tl_0231_native_f_source_c_then_weekly_f(api_client):
+    client, session = api_client
+    hist = make_xlsx_bytes(
+        COMBINED,
+        [["TL-0231", "Haifa", "Dairy", "2026-09-14 06:00", 3.8]],
+    )
+    maps = {"source_units": _src("TL-0231", **{"TL-0231": "C"})}
+    review = _post(
+        client, "/api/uploads/review", mode="historical", file=("h.xlsx", hist), **maps
+    ).json()
+    imported = _post(
+        client, "/api/uploads/import", mode="historical", file=("h.xlsx", hist), **maps
+    ).json()
+    assert review["dry_run"] is True
+    assert imported["dry_run"] is False
+    assert review["files"][0]["inserted"] == imported["files"][0]["inserted"] == 1
+    assert review["historical"]["source_units"] == imported["historical"]["source_units"] == {
+        "TL-0231": "C"
+    }
+
+    logger = session.scalars(select(Logger).where(Logger.code == "TL-0231")).one()
+    assert logger.unit == "F"
+    reading = session.scalars(select(TemperatureReading)).one()
+    assert reading.temperature_c == Decimal("3.80")
+    assert reading.raw_value == "3.8"
+
+    weekly = make_xlsx_bytes(["Time", "Temp"], [["2026-09-14 13:00", 39]])
+    weekly_body = _post(
+        client,
+        "/api/uploads/import",
+        mode="weekly",
+        files=[("TL-0231_week.xlsx", weekly)],
+    ).json()
+    assert weekly_body["files"][0]["inserted"] == 1
+    assert weekly_body["files"][0]["unit_converted"] is True
+    weekly_reading = session.scalars(
+        select(TemperatureReading).where(
+            TemperatureReading.measured_at == datetime(2026, 9, 14, 13, 0)
+        )
+    ).one()
+    assert weekly_reading.temperature_c == Decimal("3.89")
+    session.refresh(logger)
+    assert logger.unit == "F"
+
+
+def test_historical_tl_0231_native_f_source_f(api_client):
+    client, session = api_client
+    hist = make_xlsx_bytes(
+        COMBINED,
+        [["TL-0231", "Haifa", "Dairy", "2026-09-14 06:00", 38.0]],
+    )
+    maps = {"source_units": _src("TL-0231", **{"TL-0231": "F"})}
+    review = _post(
+        client, "/api/uploads/review", mode="historical", file=("h.xlsx", hist), **maps
+    ).json()
+    imported = _post(
+        client, "/api/uploads/import", mode="historical", file=("h.xlsx", hist), **maps
+    ).json()
+    assert review["files"][0]["inserted"] == imported["files"][0]["inserted"] == 1
+    logger = session.scalars(select(Logger).where(Logger.code == "TL-0231")).one()
+    assert logger.unit == "F"
+    reading = session.scalars(select(TemperatureReading)).one()
+    assert reading.temperature_c == Decimal("3.33")
+    assert reading.raw_value == "38"
+
+
+def test_historical_source_units_do_not_change_existing_native_unit(api_client):
+    client, session = api_client
+    first = make_xlsx_bytes(
+        COMBINED,
+        [["TL-0231", "Haifa", "Dairy", "2026-09-14 06:00", 38.0]],
+    )
+    _post(
+        client,
+        "/api/uploads/import",
+        mode="historical",
+        file=("a.xlsx", first),
+        source_units=_src("TL-0231", **{"TL-0231": "F"}),
+    )
+    logger = session.scalars(select(Logger).where(Logger.code == "TL-0231")).one()
+    assert logger.unit == "F"
+
+    second = make_xlsx_bytes(
+        COMBINED,
+        [["TL-0231", "Haifa", "Dairy", "2026-09-14 07:00", 3.9]],
+    )
+    _post(
+        client,
+        "/api/uploads/import",
+        mode="historical",
+        file=("b.xlsx", second),
+        source_units=_src("TL-0231", **{"TL-0231": "C"}),
+        logger_units={"TL-0231": "C"},
+    )
+    session.refresh(logger)
+    assert logger.unit == "F"
+    later = session.scalars(
+        select(TemperatureReading).where(
+            TemperatureReading.measured_at == datetime(2026, 9, 14, 7, 0)
+        )
+    ).one()
+    assert later.temperature_c == Decimal("3.90")
+
+
+def test_historical_header_c_with_source_c_and_native_f(api_client):
+    client, session = api_client
+    content = make_xlsx_bytes(
+        ["Logger", "Branch", "Fridge", "Time", "Temp C"],
+        [["TL-0231", "Haifa", "Dairy", "2026-09-14 06:00", 3.8]],
+    )
+    body = _post(
+        client,
+        "/api/uploads/import",
+        mode="historical",
+        file=("h.xlsx", content),
+        source_units=_src("TL-0231", **{"TL-0231": "C"}),
+    ).json()
+    assert body["files"][0]["status"] == "imported"
+    logger = session.scalars(select(Logger).where(Logger.code == "TL-0231")).one()
+    assert logger.unit == "F"
+    assert session.scalars(select(TemperatureReading)).one().temperature_c == Decimal("3.80")
+
+
+def test_historical_header_f_with_source_c_is_invalid(api_client):
+    client, session = api_client
+    content = make_xlsx_bytes(
+        ["Logger", "Branch", "Fridge", "Time", "Temp F"],
+        [["TL-0231", "Haifa", "Dairy", "2026-09-14 06:00", 3.8]],
+    )
+    body = _post(
+        client,
+        "/api/uploads/review",
+        mode="historical",
+        file=("h.xlsx", content),
+        source_units=_src("TL-0231", **{"TL-0231": "C"}),
+    ).json()
+    assert body["files"][0]["status"] == "invalid"
+    assert "indicates F" in body["files"][0]["message"]
+    assert counts(session)["temperature_readings"] == 0
 
 
 # ===========================================================================
@@ -923,7 +1203,13 @@ def test_weekly_after_historical_undated_assignment(api_client):
             ["TL-7000", "Beer Sheva", "Dairy", "2026-09-14 06:15", 4.1],
         ],
     )
-    _post(client, "/api/uploads/import", mode="historical", file=("h.xlsx", hist))
+    _post(
+        client,
+        "/api/uploads/import",
+        mode="historical",
+        file=("h.xlsx", hist),
+        source_units=_src("TL-7000"),
+    )
     weekly = make_xlsx_bytes(["Time", "Temp"], [["2026-09-14 07:00", 4.2]])
     body = _post(
         client,

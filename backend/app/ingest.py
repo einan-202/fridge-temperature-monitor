@@ -158,20 +158,32 @@ def ingest_rows(
     *,
     header_temp_unit: str | None = None,
     header_temp_label: str | None = None,
+    source_units: Mapping[str, str] | None = None,
 ) -> IngestResult:
     """Validate rows, get-or-create entities and insert new readings.
 
     `logger_units` maps logger code -> 'C'/'F' for NEW loggers only (default
     'C'); an existing logger's unit is never changed. Does not commit.
 
+    `source_units` maps logger code -> 'C'/'F' for THIS file's numbers. When
+    set, conversion and header-unit checks use that map, not `logger.unit`.
+    Weekly ingest omits it and keeps converting with the stored native unit.
+
     `header_temp_unit` is C/F when the temperature column name itself states a
-    unit. It is never used to convert values; a mismatch with the logger's
-    configured unit is a file-level error.
+    unit. It is never used to convert values; a mismatch with the conversion
+    unit is a file-level error.
     """
     units = {name_key(k): v for k, v in (logger_units or {}).items()}
     for unit in units.values():
         if unit not in ("C", "F"):
             raise ValueError(f"logger unit must be 'C' or 'F', got {unit!r}")
+
+    convert_map = None
+    if source_units is not None:
+        convert_map = {name_key(k): v for k, v in source_units.items()}
+        for unit in convert_map.values():
+            if unit not in ("C", "F"):
+                raise ValueError(f"source unit must be 'C' or 'F', got {unit!r}")
 
     result = IngestResult(source_file=source_file)
     loggers: dict[str, Logger] = {}
@@ -208,16 +220,24 @@ def ingest_rows(
             continue
 
         logger = _get_or_create_logger(session, loggers, code, units, result)
-        if header_temp_unit and logger.unit != header_temp_unit:
+        if convert_map is None:
+            convert_unit = logger.unit
+        else:
+            convert_unit = convert_map.get(name_key(logger.code))
+            if convert_unit not in ("C", "F"):
+                raise ValueError(
+                    f"source unit must be 'C' or 'F' for logger {logger.code}"
+                )
+        if header_temp_unit and convert_unit != header_temp_unit:
             label = header_temp_label or "temperature"
             raise IngestError(
                 f"temperature column {label!r} indicates {header_temp_unit}, "
-                f"but logger {logger.code} is configured as {logger.unit}"
+                f"but logger {logger.code} is configured as {convert_unit}"
             )
         fridge = _get_or_create_fridge(session, fridges, branch, fridge_name, result)
         _ensure_assignment(session, pairs, logger, fridge, result)
 
-        temperature = to_celsius(row.raw_temp, logger.unit)
+        temperature = to_celsius(row.raw_temp, convert_unit)
         candidates.append(
             (
                 row,
@@ -575,6 +595,7 @@ def ingest_xlsx(
     logger: Logger | str | None = None,
     fridge: Fridge | int | None = None,
     logger_units: Mapping[str, str] | None = None,
+    source_units: Mapping[str, str] | None = None,
 ) -> IngestResult:
     """Read an XLSX file and ingest it. Does not commit."""
     rows, layout = read_xlsx_sheet(path, logger=logger, fridge=fridge, session=session)
@@ -585,4 +606,5 @@ def ingest_xlsx(
         logger_units=logger_units,
         header_temp_unit=layout.temp_unit,
         header_temp_label=layout.temp_header,
+        source_units=source_units,
     )
