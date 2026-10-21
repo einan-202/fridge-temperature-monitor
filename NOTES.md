@@ -2,7 +2,7 @@
 
 ## 1. Time spent
 
-Approximately 13 hours so far, including planning, implementation, testing, debugging, and documentation.
+Approximately 15 hours so far, including planning, implementation, testing, debugging, and documentation.
 
 ## 2. Key decisions and trade-offs
 
@@ -59,6 +59,7 @@ Approximately 13 hours so far, including planning, implementation, testing, debu
 - **Index bug:** After remove/import, selections keyed by file index could attach the previous file’s logger to the next slot. Multi-file tests caught it; remaining files are remapped, with regression tests.
 - **Startup:** Skeleton placeholders (no fake readings) and a few short retries for proxy connection failures; application 500s still show the error and Try again.
 - **Docker:** A stale `node_modules` volume omitted Vitest. `npm ci` with `package-lock.json` is the intended install; an old volume can still need recreating.
+- **Truncated week:** Manual E2E testing found a Monday-last high-temperature event described as continuing through Sunday. Backend marked `end_of_period` whenever later-week data existed, even though this week's recordings had ended. Classification now distinguishes `end_of_data` from `end_of_period`; frontend wording was updated; backend and frontend regression tests were added. Evidence: commit `fd7efc8c4efad5d93e6ab0f860ee654fd26f8173`.
 
 **Limitation:** an unreported physical move cannot be detected reliably from temperatures. That logger's files keep going to its last known fridge until a move is recorded.
 
@@ -72,6 +73,8 @@ Approximately 13 hours so far, including planning, implementation, testing, debu
 6. Does the combined historical Excel contain original logger units (so TL-0231 still needs Fahrenheit conversion), or has she already converted temperatures to Celsius in that sheet?
 7. Is the 15-minute logging interval the same for every logger?
 8. Which day does her reporting week start (Monday is assumed, Sunday is common in Israel), and is 90% observed time the right bar for "no excursion observed"? Both are provisional and easy to change.
+
+
 
 ## 4. Unfinished, and next steps
 
