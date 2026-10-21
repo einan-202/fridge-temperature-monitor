@@ -189,10 +189,14 @@ def analyze_series(
 
     `readings` must already be filtered to the week and sorted by `measured_at`.
     `has_later_reading` is True iff the series has any reading at or after
-    `week_end_at` in the database (any value, including invalid). That decides
-    `end_of_period` vs `end_of_data` for a run still open at the week's last
-    reading — a series with no later reading is always `end_of_data`, even when
-    that last reading coincides with a week boundary.
+    `week_end_at` in the database (any value, including invalid).
+
+    A run still open after the last in-week high reading is `end_of_period`
+    only when later data exists *and* that last high reading is within
+    `gap_min` of `week_end_at` (the reporting-period boundary). Truncated
+    recordings earlier in the week are `end_of_data` even if a later week
+    has readings. No later reading is always `end_of_data`, even when the
+    last sample coincides with the week boundary.
     """
     result = SeriesAnalysis()
     if not readings:
@@ -219,6 +223,7 @@ def analyze_series(
     _detect_excursions_and_gaps(
         readings,
         result,
+        week_end_at=week_end_at,
         has_later_reading=has_later_reading,
         threshold_c=threshold_c,
         gap_min=gap_min,
@@ -243,6 +248,7 @@ def _detect_excursions_and_gaps(
     readings: Sequence[Reading],
     result: SeriesAnalysis,
     *,
+    week_end_at: datetime,
     has_later_reading: bool,
     threshold_c: Decimal,
     gap_min: int,
@@ -299,7 +305,12 @@ def _detect_excursions_and_gaps(
         last_valid = reading
 
     if run:
-        ended_by = "end_of_period" if has_later_reading else "end_of_data"
+        last_at = run[-1].measured_at
+        minutes_to_week_end = (week_end_at - last_at).total_seconds() / 60.0
+        reached_boundary = 0 <= minutes_to_week_end <= gap_min
+        ended_by = (
+            "end_of_period" if has_later_reading and reached_boundary else "end_of_data"
+        )
         close_run(ended_by)
 
 

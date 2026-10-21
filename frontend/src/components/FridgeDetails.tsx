@@ -1,10 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchSeries } from "../api/series";
 import { defaultDayIso, readingDayIso, weekDays } from "../chart/days";
-import { formatShortDateTime, formatWeekRange, loggerNumericKey } from "../dashboard/format";
+import {
+  formatShortDateTime,
+  formatWeekRange,
+  loggerNumericKey,
+  parseApiDateTime,
+} from "../dashboard/format";
 import { loggerCodesLabel } from "../dashboard/sort";
 import type { FridgeOverview } from "../types/overview";
-import type { SeriesDetail } from "../types/series";
+import type { SeriesDetail, SeriesExcursion } from "../types/series";
 import { DayChart } from "./DayChart";
 
 export interface FridgeDetailsProps {
@@ -20,7 +25,25 @@ type LoadState =
   | { status: "error"; message: string }
   | { status: "ready"; series: SeriesDetail[] };
 
-function recoverySentence(endedBy: string): string {
+/** Matches backend GAP_MIN: last high sample is at week end if within this window. */
+const WEEK_BOUNDARY_MINUTES = 30;
+
+function reachedReportingPeriodBoundary(
+  lastHighAt: string,
+  weekEndExclusive: string,
+): boolean {
+  const last = parseApiDateTime(lastHighAt);
+  const weekEnd = parseApiDateTime(weekEndExclusive);
+  if (!last || !weekEnd) return false;
+  const minutes = (weekEnd.getTime() - last.getTime()) / 60_000;
+  return minutes >= 0 && minutes <= WEEK_BOUNDARY_MINUTES;
+}
+
+function recoverySentence(
+  excursion: Pick<SeriesExcursion, "ended_by" | "end">,
+  weekEndExclusive: string,
+): string {
+  const endedBy = excursion.ended_by;
   if (endedBy === "recovered") {
     return "Temperature returned below 5°C.";
   }
@@ -30,13 +53,17 @@ function recoverySentence(endedBy: string): string {
   if (endedBy === "invalid_reading") {
     return "Ended at an invalid reading. Recovery is not confirmed.";
   }
-  if (endedBy === "end_of_period") {
-    return "Still above 5°C at the end of this week.";
+  if (
+    endedBy === "end_of_period" &&
+    reachedReportingPeriodBoundary(excursion.end, weekEndExclusive)
+  ) {
+    return "Last high reading was near the end of the week. Recovery not confirmed.";
   }
-  if (endedBy === "end_of_data") {
-    return "Still above 5°C at the last recorded reading.";
+  const last = formatShortDateTime(excursion.end);
+  if (last) {
+    return `Recovery not confirmed. Last recorded high reading: ${last}.`;
   }
-  return `Ended by: ${endedBy}.`;
+  return "Recovery not confirmed.";
 }
 
 function coverageNote(coverage: FridgeOverview["coverage"] | undefined): string | null {
@@ -197,7 +224,7 @@ export function FridgeDetails({
             </div>
           )}
 
-          <WeeklyFindings fridge={fridge} series={state.series} />
+          <WeeklyFindings fridge={fridge} series={state.series} weekEnd={weekEnd} />
         </>
       ) : null}
     </div>
@@ -207,9 +234,11 @@ export function FridgeDetails({
 function WeeklyFindings({
   fridge,
   series,
+  weekEnd,
 }: {
   fridge: FridgeOverview;
   series: SeriesDetail[];
+  weekEnd: string;
 }) {
   const groups = [...series]
     .sort(
@@ -262,7 +291,7 @@ function WeeklyFindings({
                     </p>
                     <p>Time above 5°C: {excursion.duration_label}</p>
                     {excursion.ended_by ? (
-                      <p>{recoverySentence(excursion.ended_by)}</p>
+                      <p>{recoverySentence(excursion, weekEnd)}</p>
                     ) : null}
                   </li>
                 ))}

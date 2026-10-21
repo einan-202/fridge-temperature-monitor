@@ -105,7 +105,7 @@ describe("FridgeDetails", () => {
     expect(screen.getByText(/First detected:/)).toHaveTextContent("14 Sep, 06:15");
     expect(screen.getByText(/Time above 5°C:/)).toHaveTextContent("at least 30 min");
     expect(
-      screen.getByText("Still above 5°C at the last recorded reading."),
+      screen.getByText("Recovery not confirmed. Last recorded high reading: 14 Sep, 06:45."),
     ).toBeInTheDocument();
     expect(
       screen.getByText(/Incomplete week: 45 of 10080 min \(estimate\)/),
@@ -386,7 +386,9 @@ describe("FridgeDetails", () => {
     expect(events).toHaveLength(3);
     expect(events[0]).toHaveTextContent("First detected: 14 Sep, 06:15");
     expect(events[0]).toHaveTextContent("Time above 5°C: at least 30 min");
-    expect(events[0]).toHaveTextContent("Still above 5°C at the last recorded reading.");
+    expect(events[0]).toHaveTextContent(
+      "Recovery not confirmed. Last recorded high reading: 14 Sep, 06:45.",
+    );
     expect(events[1]).toHaveTextContent("First detected: 16 Sep, 08:00");
     expect(events[1]).toHaveTextContent("Time above 5°C: 15 min");
     expect(events[1]).toHaveTextContent("Temperature returned below 5°C.");
@@ -395,6 +397,86 @@ describe("FridgeDetails", () => {
     expect(events[2]).toHaveTextContent("Temperature returned below 5°C.");
     expect(findings).not.toHaveTextContent("45 min");
     expect(findings).not.toHaveTextContent("at least 45");
+  });
+
+  it("does not say the fridge stayed high until Sunday when Monday recordings ended", async () => {
+    const truncated = creamCakesSeries();
+    mockSeries({
+      ...truncated,
+      excursions: truncated.excursions.map((item) => ({
+        ...item,
+        ended_by: "end_of_period",
+      })),
+    });
+    render(<FridgeDetails fridge={creamFridge()} {...weekProps} onBack={() => undefined} />);
+    expect(
+      await screen.findByText(
+        "Recovery not confirmed. Last recorded high reading: 14 Sep, 06:45.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Time above 5°C:/)).toHaveTextContent("at least 30 min");
+    expect(
+      screen.queryByText(
+        "Last high reading was near the end of the week. Recovery not confirmed.",
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Still above 5°C at the last recorded reading."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("states confirmed recovery without implying the week ended high", async () => {
+    const recovered = creamCakesSeries();
+    mockSeries({
+      ...recovered,
+      excursions: [
+        {
+          start: "2026-09-14 06:15:00",
+          end: "2026-09-14 06:15:00",
+          peak_c: "5.40",
+          reading_count: 1,
+          duration_minutes: 0,
+          duration_label: "single reading",
+          ended_by: "recovered",
+          kind: "isolated_spike",
+        },
+      ],
+    });
+    render(<FridgeDetails fridge={creamFridge()} {...weekProps} onBack={() => undefined} />);
+    expect(await screen.findByText("Temperature returned below 5°C.")).toBeInTheDocument();
+    expect(screen.getByText(/Time above 5°C:/)).toHaveTextContent("single reading");
+    expect(screen.queryByText(/Recovery not confirmed/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "Last high reading was near the end of the week. Recovery not confirmed.",
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  it("says recovery is unconfirmed near the reporting-week boundary", async () => {
+    mockSeries({
+      ...creamCakesSeries(),
+      excursions: [
+        {
+          start: "2026-09-20 23:30:00",
+          end: "2026-09-20 23:45:00",
+          peak_c: "6.20",
+          reading_count: 2,
+          duration_minutes: 15,
+          duration_label: "at least 15 min",
+          ended_by: "end_of_period",
+          kind: "sustained",
+        },
+      ],
+    });
+    render(<FridgeDetails fridge={creamFridge()} {...weekProps} onBack={() => undefined} />);
+    expect(
+      await screen.findByText(
+        "Last high reading was near the end of the week. Recovery not confirmed.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/First detected:/)).toHaveTextContent("20 Sep, 23:30");
+    expect(screen.getByText(/Time above 5°C:/)).toHaveTextContent("at least 15 min");
   });
 
   it("shows empty and error states", async () => {

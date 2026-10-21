@@ -276,8 +276,8 @@ def test_series_detail_haifa_dairy_fahrenheit_and_err(api_client, db_session):
     _eq_temp(body["max_temperature_c"], "3.89")
 
 
-def test_series_end_of_period_when_later_reading_exists(api_client, db_session):
-    """A later reading outside the week turns an open run into end_of_period."""
+def test_series_truncated_monday_not_end_of_period_with_later_week(api_client, db_session):
+    """Later-week rows must not imply the fridge stayed high through Sunday."""
     logger = _logger(db_session, "TL-0388")
     fridge = _fridge(db_session, "Rishon LeZion", "Cream cakes")
     db_session.add(
@@ -295,7 +295,46 @@ def test_series_end_of_period_when_later_reading_exists(api_client, db_session):
     db_session.flush()
 
     body = _series(api_client, db_session, "TL-0388", "Rishon LeZion", "Cream cakes")
-    assert body["excursions"][0]["ended_by"] == "end_of_period"
+    assert body["excursions"][0]["ended_by"] == "end_of_data"
+    assert body["excursions"][0]["end"] == "2026-09-14 06:45:00"
+    assert body["excursions"][0]["duration_label"] == "at least 30 min"
+
+
+def test_series_end_of_period_when_later_reading_exists(api_client, db_session):
+    """A later reading plus a last sample at week end is end_of_period."""
+    logger = _logger(db_session, "TL-0388")
+    fridge = _fridge(db_session, "Rishon LeZion", "Cream cakes")
+    db_session.add(
+        TemperatureReading(
+            logger_id=logger.id,
+            fridge_id=fridge.id,
+            measured_at=datetime(2026, 9, 20, 23, 45),
+            temperature_c=Decimal("6.20"),
+            raw_value="6.20",
+            raw_timestamp="20/09/2026 23:45",
+            source_file="test",
+            source_row=1,
+        )
+    )
+    db_session.add(
+        TemperatureReading(
+            logger_id=logger.id,
+            fridge_id=fridge.id,
+            measured_at=datetime(2026, 9, 21, 6, 0),
+            temperature_c=None,
+            raw_value="later",
+            raw_timestamp="21/09/2026 06:00",
+            source_file="test",
+            source_row=2,
+        )
+    )
+    db_session.flush()
+
+    body = _series(api_client, db_session, "TL-0388", "Rishon LeZion", "Cream cakes")
+    sunday = next(e for e in body["excursions"] if e["end"] == "2026-09-20 23:45:00")
+    assert sunday["ended_by"] == "end_of_period"
+    monday = next(e for e in body["excursions"] if e["end"] == "2026-09-14 06:45:00")
+    assert monday["ended_by"] == "gap"
 
     overview = api_client.get("/api/overview").json()
     assert overview["weeks"][0] == "2026-09-21"

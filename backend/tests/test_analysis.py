@@ -147,15 +147,35 @@ def test_end_of_data_when_no_later_reading_even_at_week_boundary():
     assert a.excursions[0].ended_by == "end_of_data"
 
 
-def test_end_of_period_when_later_reading_exists():
-    a = analyze([R((14, 6, 0, "6.0")), R((14, 6, 15, "6.5"))], has_later=True)
+def test_truncated_monday_is_end_of_data_even_with_later_week():
+    """Recordings that stop Monday are not the reporting-period boundary."""
+    a = analyze([R((14, 6, 15, "5.4")), R((14, 6, 30, "6.3")), R((14, 6, 45, "7.1"))], has_later=True)
+    assert a.excursions[0].ended_by == "end_of_data"
+    assert duration_label(a.excursions[0]) == "at least 30 min"
+
+
+def test_end_of_period_when_later_reading_exists_at_week_boundary():
+    a = analyze([R((20, 23, 45, "6.5"))], has_later=True)
     assert a.excursions[0].ended_by == "end_of_period"
+    assert duration_label(a.excursions[0]) == "single reading"
+
+
+def test_open_run_45_min_before_week_end_is_end_of_data():
+    """Later-week data does not make a Sunday 23:15 sample the period boundary."""
+    a = analyze([R((20, 23, 15, "6.5"))], has_later=True)
+    assert a.excursions[0].ended_by == "end_of_data"
 
 
 def test_end_of_data_not_guessed_as_period():
     """Open at last reading of series with nothing after → end_of_data."""
     a = analyze([R((20, 23, 45, "7.0"))], has_later=False)  # Sunday near week end
     assert a.excursions[0].ended_by == "end_of_data"
+
+
+def test_recovered_excursion_is_not_end_of_data():
+    a = analyze([R((14, 6, 15, "5.4")), R((14, 6, 30, "4.2"))], has_later=True)
+    assert a.excursions[0].ended_by == "recovered"
+    assert duration_label(a.excursions[0]) == "single reading"
 
 
 # ---------------------------------------------------------------------------
