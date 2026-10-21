@@ -101,3 +101,5 @@ More design notes: [NOTES.md](NOTES.md). Plans: [docs/cursor/plan-phase-1-scaffo
 ## Sample Excel Files
 
 Additional synthetic Excel files for testing Weekly Upload, including different formats and invalid inputs, are available in [sample_files/](sample_files/README.md).
+
+For a more realistic demonstration, you can import the larger synthetic historical Excel file through Initial Setup. See [sample_files/README.md](sample_files/README.md) for details. The file is [sample_files/historical/fridge_seed_alternative_oct2026.xlsx](sample_files/historical/fridge_seed_alternative_oct2026.xlsx). First-time setup still loads the original 16-row seed (15 unique readings).

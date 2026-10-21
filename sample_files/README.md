@@ -1,8 +1,8 @@
 # Sample Excel files
 
-These folders hold **synthetic test workbooks** for Weekly Upload. They are not real bakery measurements.
+These folders hold **synthetic test workbooks**. They are not real bakery measurements.
 
-Each `.xlsx` file is a **separate weekly logger export**. Use them in **Weekly Upload**, not Initial Setup (Initial Setup expects one combined historical file).
+Each file under `00_first_set`, `01_supported_now`, `02_aliases_after_change`, and `03_reject_safely` is a **separate weekly logger export**. Use those in **Weekly Upload**, not Initial Setup (Initial Setup expects one combined historical file). A larger historical demo file for Initial Setup is in `historical/` (see below).
 
 **Importing files changes your local database.** Review first. Import only files you intend to keep. Do not run the sample seed command against these weekly files.
 
@@ -18,6 +18,7 @@ Each `.xlsx` file is a **separate weekly logger export**. Use them in **Weekly U
 | `01_supported_now` | Suitable for Weekly Upload. |
 | `02_aliases_after_change` | Suitable for Weekly Upload. |
 | `03_reject_safely` | **REVIEW ONLY.** Use these to check that the app rejects unsafe files. **Do not import them.** |
+| `historical` | Combined historical demo for **Initial Setup**, not Weekly Upload. |
 
 ---
 
@@ -78,3 +79,15 @@ These files are meant to fail review. **Do not import them.** They still change 
 | `12_TL-0388_unknown_headers.xlsx` | Recorded At, Value | Unsupported column headers. |
 | `13_TL-0388_ambiguous_temperature_headers.xlsx` | Time, Temp, Temperature | Two temperature columns with different values. |
 | `14_TL-0512_date_only.xlsx` | Date, Temperature | Date-only values without reading times. |
+
+---
+
+## Historical Demo Dataset
+
+[`historical/fridge_seed_alternative_oct2026.xlsx`](historical/fridge_seed_alternative_oct2026.xlsx) is a **larger synthetic dataset for demonstration**. It is **optional** and separate from the original 16-row seed used in first-time setup.
+
+Use it in **Initial Setup**, not Weekly Upload. The workbook is one combined historical file with columns Logger, Branch, Fridge, Time, and Temp.
+
+After review, it can be used to demonstrate temperature charts, high-temperature events, and missing readings on the Dashboard and Fridge Details. Confirm each logger’s temperature units before importing.
+
+Importing this file changes your local database. It does not replace the seed command.
