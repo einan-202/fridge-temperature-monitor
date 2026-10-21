@@ -132,6 +132,20 @@ def test_review_writes_nothing_historical(api_client, tmp_path):
     }
 
 
+def test_historical_rejects_fahrenheit_header_for_celsius_logger(api_client, sample_path):
+    client, session = api_client
+    _seed(session, sample_path)
+    content = make_xlsx_bytes(
+        ["Logger", "Branch", "Fridge", "Time", "Temp F"],
+        [["TL-0512", "Jerusalem", "Dairy", "2026-09-14 16:00", 39]],
+    )
+    body = _post(
+        client, "/api/uploads/review", mode="historical", file=("h.xlsx", content)
+    ).json()
+    assert body["files"][0]["status"] == "invalid"
+    assert "indicates F" in body["files"][0]["message"]
+
+
 def test_review_writes_nothing_weekly_with_staged_move_and_new_logger(api_client, sample_path):
     client, session = api_client
     _seed(session, sample_path)
@@ -697,6 +711,40 @@ def test_weekly_column_validation(api_client, sample_path):
     assert by_name["TL-0512_bad.xlsx"]["status"] == "needs_attention"
     assert by_name["TL-0512_bad.xlsx"]["mapping_mismatches"]
     assert by_name["TL-0512_bare.xlsx"]["status"] == "imported"
+
+
+def test_weekly_accepts_datetime_and_temperature_c_headers(api_client, sample_path):
+    client, session = api_client
+    _seed(session, sample_path)
+    content = make_xlsx_bytes(
+        ["Date Time", "Temperature (°C)"],
+        [["2026-09-14 15:00", 4.0]],
+    )
+    body = _post(
+        client,
+        "/api/uploads/import",
+        mode="weekly",
+        files=[("TL-0512_alias.xlsx", content)],
+    ).json()
+    assert body["files"][0]["status"] == "imported"
+    assert body["files"][0]["inserted"] == 1
+
+
+def test_weekly_rejects_temp_f_header_for_celsius_logger(api_client, sample_path):
+    client, session = api_client
+    _seed(session, sample_path)
+    content = make_xlsx_bytes(["Time", "Temp F"], [["2026-09-14 15:15", 39]])
+    body = _post(
+        client,
+        "/api/uploads/import",
+        mode="weekly",
+        files=[("TL-0512_unit.xlsx", content)],
+    ).json()
+    assert body["files"][0]["status"] == "invalid"
+    assert "indicates F" in body["files"][0]["message"]
+    assert session.scalar(select(func.count()).select_from(TemperatureReading).where(
+        TemperatureReading.measured_at == datetime(2026, 9, 14, 15, 15)
+    )) == 0
 
 
 def test_weekly_generic_filename_suggests_consistent_logger_column(api_client, sample_path):

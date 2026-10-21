@@ -29,15 +29,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.ingest import (
-    TEMP_HEADERS,
-    TIME_HEADERS,
     Conflict,
     IngestError,
     IngestResult,
     ParsedRow,
     RejectedRow,
     ingest_rows,
-    read_xlsx_rows,
+    read_xlsx_sheet,
+    resolve_sheet_layout,
+    _open_xlsx_data,
 )
 from app.models import Fridge, Logger, LoggerAssignment, TemperatureReading
 from app.normalize import name_key, normalize_name, parse_timestamp
@@ -579,52 +579,14 @@ class WeeklySheetRow:
     is_blank: bool = False
 
 
-def read_weekly_sheet(path: str | os.PathLike) -> list[WeeklySheetRow]:
-    """Read Time/Temp (required) plus optional Logger/Branch/Fridge columns."""
-    path = os.fspath(path)
-    try:
-        workbook = openpyxl.load_workbook(path, data_only=True)
-    except (OSError, zipfile.BadZipFile, InvalidFileException, KeyError) as exc:
-        raise IngestError(
-            f"cannot read {os.path.basename(path)} as an XLSX file: {exc}"
-        ) from None
-    try:
-        sheet = workbook.worksheets[0]
-        data = list(sheet.iter_rows(values_only=True))
-    finally:
-        workbook.close()
+def read_weekly_sheet(path: str | os.PathLike):
+    """Read Time/Temp (required) plus optional Logger/Branch/Fridge columns.
 
-    if not data:
-        raise IngestError("file is empty: no header row")
-
-    headers: dict[str, int] = {}
-    for index, cell in enumerate(data[0]):
-        label = normalize_name(cell).casefold()
-        if label and label not in headers:
-            headers[label] = index
-
-    def find_col(aliases: tuple[str, ...]) -> int | None:
-        for alias in aliases:
-            if alias in headers:
-                return headers[alias]
-        return None
-
-    time_col = find_col(TIME_HEADERS)
-    temp_col = find_col(TEMP_HEADERS)
-    missing = [
-        label
-        for label, col in (
-            ("Time (or Timestamp)", time_col),
-            ("Temp (or Temperature)", temp_col),
-        )
-        if col is None
-    ]
-    if missing:
-        raise IngestError(f"missing required column(s): {', '.join(missing)}")
-
-    logger_col = headers.get("logger")
-    branch_col = headers.get("branch")
-    fridge_col = headers.get("fridge")
+    Returns (rows, layout). Layout includes any unit implied by the temperature
+    header; that unit is never used to convert values.
+    """
+    data = _open_xlsx_data(os.fspath(path))
+    layout = resolve_sheet_layout(data[0])
 
     def cell(values, col):
         return values[col] if col is not None and col < len(values) else None
@@ -634,11 +596,11 @@ def read_weekly_sheet(path: str | os.PathLike) -> list[WeeklySheetRow]:
 
     rows: list[WeeklySheetRow] = []
     for number, values in enumerate(data[1:], start=2):
-        raw_time = cell(values, time_col)
-        raw_temp = cell(values, temp_col)
-        logger_v = cell(values, logger_col)
-        branch_v = cell(values, branch_col)
-        fridge_v = cell(values, fridge_col)
+        raw_time = cell(values, layout.time_col)
+        raw_temp = cell(values, layout.temp_col)
+        logger_v = cell(values, layout.logger_col)
+        branch_v = cell(values, layout.branch_col)
+        fridge_v = cell(values, layout.fridge_col)
         if blank(raw_time) and blank(raw_temp) and blank(logger_v) and blank(branch_v) and blank(fridge_v):
             rows.append(WeeklySheetRow(number, None, None, is_blank=True))
         else:
@@ -652,7 +614,7 @@ def read_weekly_sheet(path: str | os.PathLike) -> list[WeeklySheetRow]:
                     fridge_col=fridge_v,
                 )
             )
-    return rows
+    return rows, layout
 
 
 def summarize_logger_column(
@@ -704,7 +666,7 @@ def mapping_mismatch_summary(mismatches: Sequence[MappingMismatch]) -> str:
 def attach_logger_column(result: FileResult, file: FileUpload) -> None:
     """Fill logger-column hint without using it to resolve the file."""
     try:
-        rows = read_weekly_sheet(file.path)
+        rows, _layout = read_weekly_sheet(file.path)
     except IngestError:
         return
     summary, suggested = summarize_logger_column(rows)
@@ -1250,7 +1212,7 @@ def process_historical(
 ) -> UploadOutcome:
     outcome = UploadOutcome(mode="historical", dry_run=not commit)
     try:
-        rows = read_xlsx_rows(file.path)
+        rows, layout = read_xlsx_sheet(file.path)
     except IngestError as exc:
         fr = FileResult(
             status="invalid",
@@ -1298,8 +1260,39 @@ def process_historical(
         }
         return outcome
 
+    conflicting = [
+        info
+        for info in infos
+        if layout.temp_unit and info.unit and info.unit != layout.temp_unit
+    ]
+    if conflicting:
+        names = ", ".join(info.code for info in conflicting)
+        units_found = ", ".join(sorted({info.unit for info in conflicting}))
+        fr.status = "invalid"
+        fr.message = (
+            f"temperature column {layout.temp_header!r} indicates {layout.temp_unit}, "
+            f"but logger(s) {names} configured as {units_found}"
+        )
+        outcome.files.append(fr)
+        outcome.message = fr.message
+        return outcome
+
     filtered, fridge_conflicts = filter_fridge_conflicts(session, rows)
-    ingest = ingest_rows(session, filtered, source_file=file.filename, logger_units=units)
+    try:
+        ingest = ingest_rows(
+            session,
+            filtered,
+            source_file=file.filename,
+            logger_units=units,
+            header_temp_unit=layout.temp_unit,
+            header_temp_label=layout.temp_header,
+        )
+    except IngestError as exc:
+        fr.status = "invalid"
+        fr.message = str(exc)
+        outcome.files.append(fr)
+        outcome.message = str(exc)
+        return outcome
     _apply_ingest_counts(fr, ingest, fridge_conflicts)
 
     # Names that would be / were created.
@@ -1422,10 +1415,17 @@ def process_weekly_file(
         unit_converted=(logger.unit == "F"),
     )
     try:
-        sheet_rows = read_weekly_sheet(file.path)
+        sheet_rows, layout = read_weekly_sheet(file.path)
     except IngestError as exc:
         result.status = "invalid"
         result.message = str(exc)
+        return result
+    if layout.temp_unit and layout.temp_unit != logger.unit:
+        result.status = "invalid"
+        result.message = (
+            f"temperature column {layout.temp_header!r} indicates {layout.temp_unit}, "
+            f"but logger {logger.code} is configured as {logger.unit}"
+        )
         return result
 
     assignments = load_assignments(session, logger.id)
@@ -1521,6 +1521,8 @@ def process_weekly_file(
         filtered,
         source_file=file.filename,
         logger_units={logger.code: logger.unit},
+        header_temp_unit=layout.temp_unit,
+        header_temp_label=layout.temp_header,
     )
     _apply_ingest_counts(result, ingest, fridge_conflicts)
     result.fridges = list(fridges_used.values())

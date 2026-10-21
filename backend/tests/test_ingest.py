@@ -6,7 +6,7 @@ tests use the rolled-back `db_session` fixture and small xlsx files built with
 openpyxl in tmp_path.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 import openpyxl
@@ -14,14 +14,20 @@ import pytest
 from sqlalchemy import func, select
 
 from app.ingest import (
+    LOGGER_ALIASES,
+    TEMP_ALIASES,
+    TIME_ALIASES,
     IngestError,
     ParsedRow,
+    canonical_header,
     ingest_rows,
     ingest_xlsx,
     raw_text,
     read_xlsx_rows,
+    resolve_sheet_layout,
 )
 from app.models import Fridge, Logger, LoggerAssignment, TemperatureReading
+from app.normalize import parse_timestamp
 
 COMBINED = ["Logger", "Branch", "Fridge", "Time", "Temp"]
 
@@ -161,6 +167,134 @@ def test_reader_fridge_by_id_needs_a_session(tmp_path):
     path = make_xlsx(tmp_path, ["Time", "Temp"], [["2026-09-14 06:00", 4.0]])
     with pytest.raises(IngestError, match="session"):
         read_xlsx_rows(path, logger="TL-9", fridge=1)
+
+
+def _explicit_rows(tmp_path, header, rows=None):
+    path = make_xlsx(tmp_path, header, rows or [["2026-09-14 06:00", 4.1]])
+    return read_xlsx_rows(
+        path, logger="TL-9", fridge=Fridge(branch_name="Haifa", name="Dairy")
+    )
+
+
+@pytest.mark.parametrize("time_header", TIME_ALIASES)
+def test_each_time_alias_is_accepted(tmp_path, time_header):
+    rows = _explicit_rows(tmp_path, [time_header, "Temp"])
+    assert rows[0].raw_time == "2026-09-14 06:00"
+    assert rows[0].raw_temp == 4.1
+
+
+@pytest.mark.parametrize("temp_header, unit", TEMP_ALIASES)
+def test_each_temp_alias_is_accepted(tmp_path, temp_header, unit):
+    rows = _explicit_rows(tmp_path, ["Time", temp_header])
+    assert rows[0].raw_temp == 4.1
+    layout = resolve_sheet_layout(["Time", temp_header])
+    assert layout.temp_unit == unit
+
+
+@pytest.mark.parametrize("logger_header", LOGGER_ALIASES)
+def test_each_logger_alias_is_accepted(tmp_path, logger_header):
+    path = make_xlsx(
+        tmp_path,
+        [logger_header, "Branch", "Fridge", "Time", "Temp"],
+        [["TL-1", "Haifa", "Dairy", "2026-09-14 06:00", 4.1]],
+    )
+    (row,) = read_xlsx_rows(path)
+    assert row.logger_code == "TL-1"
+    assert row.fridge_name == "Dairy"
+
+
+def test_reversed_column_order_is_accepted(tmp_path):
+    rows = _explicit_rows(tmp_path, ["Temp", "Time"], [[4.2, "2026-09-14 06:15"]])
+    assert rows[0].raw_time == "2026-09-14 06:15"
+    assert rows[0].raw_temp == 4.2
+
+
+def test_header_case_whitespace_and_punctuation_variants(tmp_path):
+    rows = _explicit_rows(tmp_path, [" DATE / TIME ", " temperature (°c) "])
+    assert rows[0].raw_temp == 4.1
+    rows = _explicit_rows(tmp_path, ["date-time", "Temp.C"])
+    assert rows[0].raw_temp == 4.1
+    path = make_xlsx(
+        tmp_path,
+        ["device-id", "TIME", "TEMP_F"],
+        [["TL-9", "2026-09-14 06:00", 4.1]],
+    )
+    rows = read_xlsx_rows(path, logger="TL-9", fridge=Fridge(branch_name="Haifa", name="Dairy"))
+    assert rows[0].logger_code == "TL-9"
+    assert canonical_header("Temperature(°C)") == canonical_header("temperature c")
+
+
+def test_value_is_not_guessed_as_temperature(tmp_path):
+    path = make_xlsx(tmp_path, ["Time", "Value"], [["2026-09-14 06:00", 4.1]])
+    with pytest.raises(IngestError, match="missing required column"):
+        read_xlsx_rows(path, logger="TL-9", fridge=Fridge(branch_name="Haifa", name="Dairy"))
+
+
+def test_ambiguous_time_or_temp_headers_are_rejected(tmp_path):
+    fridge = Fridge(branch_name="Haifa", name="Dairy")
+    with pytest.raises(IngestError, match="ambiguous column"):
+        read_xlsx_rows(
+            make_xlsx(tmp_path, ["Time", "Timestamp", "Temp"], []),
+            logger="TL-9",
+            fridge=fridge,
+        )
+    with pytest.raises(IngestError, match="ambiguous column"):
+        read_xlsx_rows(
+            make_xlsx(tmp_path, ["Time", "Temp", "Temperature"], []),
+            logger="TL-9",
+            fridge=fridge,
+        )
+    with pytest.raises(IngestError, match="ambiguous column"):
+        read_xlsx_rows(
+            make_xlsx(tmp_path, ["Logger", "Logger ID", "Time", "Temp"], []),
+            logger="TL-9",
+            fridge=fridge,
+        )
+
+
+def test_xlsx_date_formatted_cell_is_not_treated_as_midnight(tmp_path):
+    """Excel date-only cells become datetime(…, 00:00) in openpyxl; that is not a reading time."""
+    path = tmp_path / "excel_date.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Date", "Temp"])
+    date_cell = ws.cell(row=2, column=1, value=date(2026, 9, 14))
+    date_cell.number_format = "YYYY-MM-DD"
+    ws.cell(row=2, column=2, value=4.1)
+    midnight = ws.cell(row=3, column=1, value=datetime(2026, 9, 14, 0, 0))
+    midnight.number_format = "YYYY-MM-DD HH:MM"
+    ws.cell(row=3, column=2, value=4.2)
+    wb.save(path)
+
+    fridge = Fridge(branch_name="Haifa", name="Dairy")
+    rows = read_xlsx_rows(path, logger="TL-9", fridge=fridge)
+    assert isinstance(rows[0].raw_time, date) and not isinstance(rows[0].raw_time, datetime)
+    assert isinstance(rows[1].raw_time, datetime)
+    assert rows[1].raw_time == datetime(2026, 9, 14, 0, 0)
+
+    result = ingest_rows(None, rows[:1], "excel_date.xlsx")
+    assert result.inserted == 0
+    assert result.rejected[0].row_number == 2
+    assert "time of day" in result.rejected[0].reason
+    assert parse_timestamp(rows[1].raw_time) == datetime(2026, 9, 14, 0, 0)
+
+
+def test_date_only_values_fail_timestamp_validation(tmp_path):
+    path = make_xlsx(
+        tmp_path,
+        ["Date", "Temp"],
+        [["2026-09-14", 4.1], ["14/09/2026", 4.2]],
+    )
+    rows = read_xlsx_rows(path, logger="TL-9", fridge=Fridge(branch_name="Haifa", name="Dairy"))
+    result = ingest_rows(None, rows, "date.xlsx")
+    assert result.inserted == 0
+    assert {r.row_number for r in result.rejected} == {2, 3}
+    assert all("timestamp" in r.reason.lower() or "time" in r.reason.lower() for r in result.rejected)
+
+    date_row = ParsedRow(2, "TL-9", "Haifa", "Dairy", date(2026, 9, 14), 4.1)
+    result = ingest_rows(None, [date_row], "date.xlsx")
+    assert result.inserted == 0
+    assert "time of day" in result.rejected[0].reason
 
 
 # ===========================================================================
@@ -507,3 +641,38 @@ def test_ingest_leaves_nothing_behind_after_rollback(db_engine, tmp_path):
     with Session(db_engine) as session:
         assert session.scalar(select(func.count()).select_from(Logger).where(Logger.code == "TL-ROLLBACK")) == 0
         assert session.scalar(select(func.count()).select_from(TemperatureReading)) == 0
+
+
+@integration
+def test_header_temp_unit_matching_logger_is_imported(db_session, tmp_path):
+    fridge = Fridge(branch_name="Haifa", name="Dairy")
+    db_session.add(Logger(code="TL-F", unit="F"))
+    db_session.add(fridge)
+    db_session.flush()
+    path = make_xlsx(tmp_path, ["Time", "Temp F"], [["2026-09-14 06:00", 39]])
+    result = ingest_xlsx(db_session, path, logger="TL-F", fridge=fridge)
+    assert result.inserted == 1
+    assert readings(db_session)[0].temperature_c == Decimal("3.89")
+
+
+@integration
+def test_header_temp_unit_conflicting_with_logger_is_rejected(db_session, tmp_path):
+    fridge = Fridge(branch_name="Haifa", name="Dairy")
+    db_session.add(Logger(code="TL-C", unit="C"))
+    db_session.add(fridge)
+    db_session.flush()
+    path = make_xlsx(tmp_path, ["Time", "Temperature (°F)"], [["2026-09-14 06:00", 39]])
+    with pytest.raises(IngestError, match="indicates F"):
+        ingest_xlsx(db_session, path, logger="TL-C", fridge=fridge)
+    assert counts(db_session)["temperature_readings"] == 0
+
+
+@integration
+def test_celsius_header_conflicts_with_fahrenheit_logger(db_session, tmp_path):
+    fridge = Fridge(branch_name="Haifa", name="Dairy")
+    db_session.add(Logger(code="TL-F2", unit="F"))
+    db_session.add(fridge)
+    db_session.flush()
+    path = make_xlsx(tmp_path, ["Time", "Temp C"], [["2026-09-14 06:00", 4.0]])
+    with pytest.raises(IngestError, match="indicates C"):
+        ingest_xlsx(db_session, path, logger="TL-F2", fridge=fridge)

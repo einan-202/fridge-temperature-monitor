@@ -298,9 +298,21 @@ def test_historical_override_and_required_choice():
 
 def test_weekly_sheet_time_temp_only(tmp_path):
     path = make_xlsx(tmp_path, ["Time", "Temp"], [["2026-09-14 06:00", 4.1]])
-    rows = read_weekly_sheet(path)
+    rows, layout = read_weekly_sheet(path)
     assert len(rows) == 1
     assert rows[0].raw_temp == 4.1 and rows[0].logger_col is None
+    assert layout.temp_unit is None
+
+
+def test_weekly_sheet_logger_id_and_datetime_aliases(tmp_path):
+    path = make_xlsx(
+        tmp_path,
+        ["Logger ID", "Date/Time", "Temperature (°C)"],
+        [["TL-0388", "2026-09-14 06:00", 4.1]],
+    )
+    rows, layout = read_weekly_sheet(path)
+    assert rows[0].logger_col == "TL-0388"
+    assert layout.temp_unit == "C"
 
 
 def test_optional_columns_agree_are_accepted():

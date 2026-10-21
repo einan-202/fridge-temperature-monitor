@@ -16,9 +16,10 @@ Rules (see docs/cursor/plan-phase-2.md):
 """
 
 import os
+import re
 import zipfile
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, time as dt_time
 from decimal import Decimal
 from typing import Any, Iterable, Mapping
 
@@ -33,8 +34,35 @@ from app.normalize import name_key, normalize_name, parse_timestamp, to_celsius
 
 INSERT_CHUNK = 1000
 
-TIME_HEADERS = ("time", "timestamp")
-TEMP_HEADERS = ("temp", "temperature")
+# Explicit header aliases. Matching uses canonical_header() (case, whitespace,
+# punctuation). Unlisted names such as "Value" are never guessed.
+TIME_ALIASES = ("Time", "Timestamp", "DateTime", "Date/Time", "Date Time", "Date")
+TEMP_ALIASES: tuple[tuple[str, str | None], ...] = (
+    ("Temp", None),
+    ("Temperature", None),
+    ("Temperature (°C)", "C"),
+    ("Temp C", "C"),
+    ("Temperature (°F)", "F"),
+    ("Temp F", "F"),
+)
+LOGGER_ALIASES = ("Logger", "Logger ID", "Logger Code", "Device ID")
+
+_HEADER_DEGREE = str.maketrans({"°": " ", "º": " ", "℃": " c", "℉": " f"})
+_HEADER_NON_WORD = re.compile(r"[^\w\s]+", flags=re.UNICODE)
+_EXCEL_TIME_IN_FORMAT = re.compile(r"(?<!\\)(?:h+|s+|am/pm|a/p)", re.IGNORECASE)
+
+
+def canonical_header(value: Any) -> str:
+    """Casefold, collapse whitespace, and treat punctuation as spaces."""
+    if value is None:
+        return ""
+    text = normalize_name(value).casefold().translate(_HEADER_DEGREE).replace("_", " ")
+    text = _HEADER_NON_WORD.sub(" ", text)
+    return " ".join(text.split())
+
+
+TIME_HEADERS = tuple(canonical_header(alias) for alias in TIME_ALIASES)
+TEMP_HEADERS = tuple(canonical_header(alias) for alias, _unit in TEMP_ALIASES)
 
 
 class IngestError(ValueError):
@@ -127,11 +155,18 @@ def ingest_rows(
     rows: Iterable[ParsedRow],
     source_file: str | None,
     logger_units: Mapping[str, str] | None = None,
+    *,
+    header_temp_unit: str | None = None,
+    header_temp_label: str | None = None,
 ) -> IngestResult:
     """Validate rows, get-or-create entities and insert new readings.
 
     `logger_units` maps logger code -> 'C'/'F' for NEW loggers only (default
     'C'); an existing logger's unit is never changed. Does not commit.
+
+    `header_temp_unit` is C/F when the temperature column name itself states a
+    unit. It is never used to convert values; a mismatch with the logger's
+    configured unit is a file-level error.
     """
     units = {name_key(k): v for k, v in (logger_units or {}).items()}
     for unit in units.values():
@@ -173,6 +208,12 @@ def ingest_rows(
             continue
 
         logger = _get_or_create_logger(session, loggers, code, units, result)
+        if header_temp_unit and logger.unit != header_temp_unit:
+            label = header_temp_label or "temperature"
+            raise IngestError(
+                f"temperature column {label!r} indicates {header_temp_unit}, "
+                f"but logger {logger.code} is configured as {logger.unit}"
+            )
         fridge = _get_or_create_fridge(session, fridges, branch, fridge_name, result)
         _ensure_assignment(session, pairs, logger, fridge, result)
 
@@ -317,11 +358,183 @@ def _store_readings(session, candidates, result) -> None:
 # --------------------------------------------------------------------------
 
 
-def _find_column(headers: dict[str, int], aliases: tuple[str, ...]) -> int | None:
-    for alias in aliases:
-        if alias in headers:
-            return headers[alias]
-    return None
+@dataclass(frozen=True)
+class SheetLayout:
+    """Resolved first-sheet columns. Duplicate role matches are never collapsed."""
+
+    time_col: int
+    temp_col: int
+    logger_col: int | None
+    branch_col: int | None
+    fridge_col: int | None
+    temp_unit: str | None
+    temp_header: str
+
+
+def _header_role_map() -> dict[str, tuple[str, str | None]]:
+    mapping: dict[str, tuple[str, str | None]] = {}
+    for alias in TIME_ALIASES:
+        mapping[canonical_header(alias)] = ("time", None)
+    for alias, unit in TEMP_ALIASES:
+        mapping[canonical_header(alias)] = ("temp", unit)
+    for alias in LOGGER_ALIASES:
+        mapping[canonical_header(alias)] = ("logger", None)
+    mapping[canonical_header("Branch")] = ("branch", None)
+    mapping[canonical_header("Fridge")] = ("fridge", None)
+    return mapping
+
+
+def resolve_sheet_layout(header_row: Iterable[Any]) -> SheetLayout:
+    """Map header cells to roles. Ambiguous or missing Time/Temp is a file error."""
+    roles = _header_role_map()
+    found: dict[str, list[tuple[int, str, str | None]]] = {}
+    for index, cell in enumerate(header_row):
+        original = normalize_name(cell)
+        key = canonical_header(cell)
+        if not key:
+            continue
+        mapped = roles.get(key)
+        if mapped is None:
+            continue
+        role, unit = mapped
+        found.setdefault(role, []).append((index, original or str(cell), unit))
+
+    ambiguous = [role for role, cols in found.items() if len(cols) > 1]
+    if ambiguous:
+        parts = [
+            f"{role} ({', '.join(label for _i, label, _u in found[role])})"
+            for role in sorted(ambiguous)
+        ]
+        raise IngestError(f"ambiguous column(s): {', '.join(parts)}")
+
+    missing = []
+    if "time" not in found:
+        missing.append("Time (or Timestamp)")
+    if "temp" not in found:
+        missing.append("Temp (or Temperature)")
+    if missing:
+        raise IngestError(f"missing required column(s): {', '.join(missing)}")
+
+    time_col = found["time"][0][0]
+    temp_col, temp_header, temp_unit = found["temp"][0]
+    logger_col = found["logger"][0][0] if "logger" in found else None
+    branch_col = found["branch"][0][0] if "branch" in found else None
+    fridge_col = found["fridge"][0][0] if "fridge" in found else None
+    return SheetLayout(
+        time_col=time_col,
+        temp_col=temp_col,
+        logger_col=logger_col,
+        branch_col=branch_col,
+        fridge_col=fridge_col,
+        temp_unit=temp_unit,
+        temp_header=temp_header,
+    )
+
+
+def _excel_format_includes_time(number_format: str | None) -> bool:
+    """True when the Excel number format encodes a clock time, not only a date."""
+    fmt = (number_format or "").strip()
+    if not fmt or fmt.lower() in ("general", "standard"):
+        return True
+    stripped = re.sub(r'"[^"]*"', "", fmt)
+    return _EXCEL_TIME_IN_FORMAT.search(stripped) is not None
+
+
+def _excel_cell_value(cell: Any) -> Any:
+    """Return a cell value, mapping date-only formatted midnights to datetime.date."""
+    value = cell.value
+    if (
+        isinstance(value, datetime)
+        and value.time() == dt_time.min
+        and not _excel_format_includes_time(cell.number_format)
+    ):
+        return value.date()
+    return value
+
+
+def _open_xlsx_data(path: str) -> list[tuple]:
+    try:
+        workbook = openpyxl.load_workbook(path, data_only=True)
+    except (OSError, zipfile.BadZipFile, InvalidFileException, KeyError) as exc:
+        raise IngestError(f"cannot read {os.path.basename(path)} as an XLSX file: {exc}") from None
+    try:
+        sheet = workbook.worksheets[0]
+        data = [tuple(_excel_cell_value(cell) for cell in row) for row in sheet.iter_rows()]
+    finally:
+        workbook.close()
+    if not data:
+        raise IngestError("file is empty: no header row")
+    return data
+
+
+def _cell(values, col):
+    return values[col] if col is not None and col < len(values) else None
+
+
+def _rows_from_layout(
+    data: list[tuple],
+    layout: SheetLayout,
+    logger: Logger | str | None,
+    fridge: Fridge | int | None,
+    session: Session | None,
+) -> list[ParsedRow]:
+    rows: list[ParsedRow] = []
+    if logger is not None or fridge is not None:
+        if logger is None or fridge is None:
+            raise IngestError("pass both logger and fridge explicitly (or neither for combined files)")
+        code, branch, name = _explicit_identity(logger, fridge, session)
+        for number, values in enumerate(data[1:], start=2):
+            raw_time, raw_temp = _cell(values, layout.time_col), _cell(values, layout.temp_col)
+            in_file_logger = _cell(values, layout.logger_col)
+            if _is_blank(raw_time) and _is_blank(raw_temp) and _is_blank(in_file_logger):
+                rows.append(ParsedRow(number, None, None, None, None, None))
+            elif not _is_blank(in_file_logger) and name_key(in_file_logger) != name_key(code):
+                reason = (
+                    f"row names logger {normalize_name(in_file_logger)!r}, "
+                    f"but this file was given for logger {code!r}"
+                )
+                rows.append(ParsedRow(number, in_file_logger, None, None, raw_time, raw_temp, reason))
+            else:
+                rows.append(ParsedRow(number, code, branch, name, raw_time, raw_temp))
+        return rows
+
+    absent = [
+        label
+        for label, col in (
+            ("Logger", layout.logger_col),
+            ("Branch", layout.branch_col),
+            ("Fridge", layout.fridge_col),
+        )
+        if col is None
+    ]
+    if absent:
+        raise IngestError(
+            f"file has no {', '.join(absent)} column(s): pass the logger and fridge explicitly"
+        )
+    for number, values in enumerate(data[1:], start=2):
+        rows.append(
+            ParsedRow(
+                number,
+                _cell(values, layout.logger_col),
+                _cell(values, layout.branch_col),
+                _cell(values, layout.fridge_col),
+                _cell(values, layout.time_col),
+                _cell(values, layout.temp_col),
+            )
+        )
+    return rows
+
+
+def read_xlsx_sheet(
+    path: str | os.PathLike,
+    logger: Logger | str | None = None,
+    fridge: Fridge | int | None = None,
+    session: Session | None = None,
+) -> tuple[list[ParsedRow], SheetLayout]:
+    """Read the first sheet and the resolved header layout."""
+    data = _open_xlsx_data(os.fspath(path))
+    layout = resolve_sheet_layout(data[0])
+    return _rows_from_layout(data, layout, logger, fridge, session), layout
 
 
 def read_xlsx_rows(
@@ -336,76 +549,7 @@ def read_xlsx_rows(
     Time/Temp-only format: pass BOTH `logger` (a Logger or its code) and
     `fridge` (a Fridge, or its id together with `session`); nothing is guessed.
     """
-    path = os.fspath(path)
-    try:
-        workbook = openpyxl.load_workbook(path, data_only=True)
-    except (OSError, zipfile.BadZipFile, InvalidFileException, KeyError) as exc:
-        raise IngestError(f"cannot read {os.path.basename(path)} as an XLSX file: {exc}") from None
-    try:
-        sheet = workbook.worksheets[0]
-        data = list(sheet.iter_rows(values_only=True))
-    finally:
-        workbook.close()
-
-    if not data:
-        raise IngestError("file is empty: no header row")
-    headers: dict[str, int] = {}
-    for index, cell in enumerate(data[0]):
-        label = normalize_name(cell).casefold()
-        if label and label not in headers:
-            headers[label] = index
-
-    time_col = _find_column(headers, TIME_HEADERS)
-    temp_col = _find_column(headers, TEMP_HEADERS)
-    missing = [
-        label
-        for label, col in (("Time (or Timestamp)", time_col), ("Temp (or Temperature)", temp_col))
-        if col is None
-    ]
-    if missing:
-        raise IngestError(f"missing required column(s): {', '.join(missing)}")
-
-    def cell(values, col):
-        return values[col] if col is not None and col < len(values) else None
-
-    rows: list[ParsedRow] = []
-    if logger is not None or fridge is not None:
-        if logger is None or fridge is None:
-            raise IngestError("pass both logger and fridge explicitly (or neither for combined files)")
-        code, branch, name = _explicit_identity(logger, fridge, session)
-        logger_col = headers.get("logger")
-        for number, values in enumerate(data[1:], start=2):
-            raw_time, raw_temp = cell(values, time_col), cell(values, temp_col)
-            in_file_logger = cell(values, logger_col)
-            if _is_blank(raw_time) and _is_blank(raw_temp) and _is_blank(in_file_logger):
-                rows.append(ParsedRow(number, None, None, None, None, None))  # blank row
-            elif not _is_blank(in_file_logger) and name_key(in_file_logger) != name_key(code):
-                reason = (
-                    f"row names logger {normalize_name(in_file_logger)!r}, "
-                    f"but this file was given for logger {code!r}"
-                )
-                rows.append(ParsedRow(number, in_file_logger, None, None, raw_time, raw_temp, reason))
-            else:
-                rows.append(ParsedRow(number, code, branch, name, raw_time, raw_temp))
-        return rows
-
-    columns = {label: headers.get(label) for label in ("logger", "branch", "fridge")}
-    absent = [label.capitalize() for label, col in columns.items() if col is None]
-    if absent:
-        raise IngestError(
-            f"file has no {', '.join(absent)} column(s): pass the logger and fridge explicitly"
-        )
-    for number, values in enumerate(data[1:], start=2):
-        rows.append(
-            ParsedRow(
-                number,
-                cell(values, columns["logger"]),
-                cell(values, columns["branch"]),
-                cell(values, columns["fridge"]),
-                cell(values, time_col),
-                cell(values, temp_col),
-            )
-        )
+    rows, _layout = read_xlsx_sheet(path, logger=logger, fridge=fridge, session=session)
     return rows
 
 
@@ -433,7 +577,12 @@ def ingest_xlsx(
     logger_units: Mapping[str, str] | None = None,
 ) -> IngestResult:
     """Read an XLSX file and ingest it. Does not commit."""
-    rows = read_xlsx_rows(path, logger=logger, fridge=fridge, session=session)
+    rows, layout = read_xlsx_sheet(path, logger=logger, fridge=fridge, session=session)
     return ingest_rows(
-        session, rows, source_file=os.path.basename(os.fspath(path)), logger_units=logger_units
+        session,
+        rows,
+        source_file=os.path.basename(os.fspath(path)),
+        logger_units=logger_units,
+        header_temp_unit=layout.temp_unit,
+        header_temp_label=layout.temp_header,
     )
