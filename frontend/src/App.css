@@ -367,9 +367,9 @@ body {
   background: var(--red-soft);
 }
 
-.summary-counters__item--amber .summary-counters__icon {
-  color: var(--amber);
-  background: var(--amber-soft);
+.summary-counters__item--neutral .summary-counters__icon {
+  color: var(--neutral);
+  background: var(--neutral-soft);
 }
 
 .summary-counters__text {
@@ -383,7 +383,7 @@ body {
 }
 
 .summary-counters__label {
-  font-size: 0.82rem;
+  font-size: 14px;
   color: var(--text-secondary);
   line-height: 1.25;
   margin-top: 0.1rem;
@@ -526,14 +526,14 @@ body {
 
 .fridge-card__temp-label {
   margin-top: 0.15rem;
-  font-size: 0.88rem;
+  font-size: 14px;
   color: var(--text-muted);
 }
 
 .fridge-card__event {
   margin: 0.3rem 0 0;
   padding: 0;
-  font-size: 0.92rem;
+  font-size: 14px;
   font-weight: 500;
   line-height: 1.4;
   color: inherit;
@@ -598,7 +598,7 @@ body {
 
 .fridge-card__detail {
   margin: 0.3rem 0 0;
-  font-size: 0.92rem;
+  font-size: 14px;
   font-weight: 500;
   line-height: 1.4;
   color: inherit;
@@ -661,7 +661,7 @@ body {
   }
 
   .summary-counters__label {
-    font-size: 0.68rem;
+    font-size: 13px;
     line-height: 1.2;
     margin-top: 0.05rem;
   }

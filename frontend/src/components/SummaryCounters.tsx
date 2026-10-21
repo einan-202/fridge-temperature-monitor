@@ -38,9 +38,9 @@ export function SummaryCounters({ counts }: SummaryCountersProps) {
           </div>
         </div>
       </div>
-      <div className="summary-counters__item summary-counters__item--amber">
+      <div className="summary-counters__item summary-counters__item--neutral">
         <span className="summary-counters__icon" aria-hidden="true">
-          <StatusIcon tone="amber" />
+          <StatusIcon tone="neutral" />
         </span>
         <div className="summary-counters__text">
           <div className="summary-counters__value">
