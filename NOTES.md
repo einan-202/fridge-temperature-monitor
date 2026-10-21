@@ -8,43 +8,37 @@ Approximately 19 hours, including planning, implementation, testing, debugging a
 
 ## 2. Design decisions and assumptions
 
-Most important first. Summer was unavailable during development, so a few values are assumed and listed as questions in section 3.
+Most important first. Summer was unavailable during development, so I made reasonable assumptions and continued working. The specific gap, coverage, and warming detection thresholds are initial rules I chose for the implementation, not values confirmed by Summer. I would validate them with her before real-world use.
 
-1. **High temperatures.** The limit is 5°C (strictly above). A single high reading (an isolated spike that then recovers) is separated from a longer event, because one spike does not necessarily mean the fridge has a serious problem. Two or more consecutive high readings are a sustained event. A one-reading event that ends in a gap, an invalid reading, or the end of recorded data is unconfirmed.
+1. **High temperatures.** Summer specified the 5°C limit (strictly above). My decision was to treat a temporary spike that then recovers differently from a sustained problem, so she would not get misleading warnings. Two or more consecutive high readings are a sustained event; a one-reading event that ends in a gap, an invalid reading, or the end of recorded data is unconfirmed.
 
-2. **Missing data.** Missing readings do not mean the fridge was safe. A gap of more than 30 minutes, or an `ERR`/invalid value, ends the current high-temperature or warming run. The report shows that information is missing. Unobserved time is never called safe. Coverage is an estimate from sample intervals; “no excursion observed” also requires at least 90% of the week observed (`MIN_COVERAGE=0.90`, provisional).
+2. **Missing data.** I did not want missing readings to make a fridge look safe when a problem could have been missed. A gap of more than 30 minutes (a provisional assumption), or an `ERR`/invalid value, ends the current high-temperature or warming run, and unobserved time is never called safe. Coverage is an estimate from sample intervals; “no excursion observed” also requires at least 90% of the week observed (`MIN_COVERAGE=0.90`, also provisional).
 
-3. **Event duration.** Duration is how long a high temperature was *recorded*, a lower bound, not how long it is assumed to have lasted. One reading is shown as a single reading. If the run ends in a gap, an invalid value, the week boundary, or the end of recorded data, the label is “at least”. If recordings stop before recovery, the system says recovery was not confirmed.
+3. **Event duration.** I wanted to answer the inspector accurately, without guessing what happened between readings. Duration is how long a high temperature was *recorded* — a lower bound — and a single reading is shown as one reading. If the run ends in a gap, an invalid value, the week boundary, or the end of recorded data, the label is “at least”; if recordings stop before recovery, recovery is not confirmed. `end_of_period` is used only when the last in-week high reading sits at the week boundary *and* a later reading exists in the database; truncated recordings earlier in the week are `end_of_data` even if a later week has data.
 
-   `end_of_period` is used only when the last in-week high reading sits at the week boundary *and* a later reading exists in the database. Truncated recordings earlier in the week are `end_of_data` even if a later week has data.
+4. **Gradual warming.** I wanted to flag a fridge that might be starting to fail before the temperature exceeds 5°C. Summer did not define exact detection rules, so I used a starting assumption: at least four consecutive valid readings all rise, the total rise is at least 1.0°C, and no single step is more than half the total.
 
-4. **Gradual warming.** A warning is shown when at least four consecutive valid readings all rise, the total rise is at least 1.0°C, and no single step is more than half the total — even if the temperature is still below 5°C. That can flag a fridge that may be starting to fail.
+5. **Logger movements.** A logger can move between fridges, so I kept logger identity separate from fridge identity and require confirmation where the fridge is unclear. Each reading keeps the fridge named on that row; unknown move dates stay NULL and are never invented (for example TL-0417 under two undated assignments). An unreported physical move cannot be detected from temperatures alone.
 
-5. **Logger movements.** Loggers and fridges are separate: a logger can move. Each reading keeps the fridge named on that row. Unknown move dates stay NULL and are never invented. When the correct fridge cannot be determined (for example TL-0417 under two undated assignments), the user must confirm it. An unreported physical move cannot be detected from temperatures alone.
+6. **File matching.** I did not want to trust filenames blindly, because Summer did not promise a consistent naming convention. A `TL-` token in the name, or one consistent Logger column, is only a suggestion. The user reviews and corrects assignments before import; mixed or conflicting cells stay blocking.
 
-6. **File matching.** Filenames are not assumed to contain the correct logger number. A `TL-` token in the name, or one consistent Logger column, is a suggestion. The user reviews and corrects assignments before import. Mixed or conflicting cells stay blocking.
+7. **Different Excel formats.** I wanted to reduce manual spreadsheet cleanup, because different branches export slightly different layouts. Column name aliases, column order, native Excel datetimes, `YYYY-MM-DD HH:MM`, and day-first `DD/MM/YYYY HH:MM` are supported.
 
-7. **Different Excel formats.** Column name aliases, column order, native Excel datetimes, `YYYY-MM-DD HH:MM`, and day-first `DD/MM/YYYY HH:MM` are supported because files from different branches may not look the same.
+8. **Temperature units.** I assumed the old Haifa logger TL-0231 uses Fahrenheit because its example readings are 38.3 and 39.0, but Summer has **not** confirmed this, and I did not want to assume the same for every Haifa logger or convert historical values twice. Reports store and show Celsius; a new Haifa logger other than TL-0231 needs an explicit C/F choice before historical import; new non-Haifa loggers default to Celsius; units are never guessed from magnitudes. Historical **source units** (the numbers in this Excel file) are separate from the logger’s stored native unit, which is never overwritten; weekly files still convert using the stored native unit.
 
-8. **Temperature units.** The old Haifa logger TL-0231 is assumed Fahrenheit because its example readings are 38.3 and 39.0. Summer has **not** confirmed this. Reports store and show Celsius. Other Haifa loggers are **not** assumed Fahrenheit: a new Haifa logger other than TL-0231 needs an explicit C/F choice before historical import. New non-Haifa loggers default to Celsius. Units are never guessed from magnitudes.
+9. **Duplicate readings.** I wanted repeated imports to be safe and not count a measurement twice. The unique key is logger and time: an identical repeat is skipped, and if values or fridges disagree the conflict is reported instead of silently overwriting the first stored reading.
 
-   Historical **source units** (the numbers in this Excel file) are separate from the logger’s stored native unit. An existing logger’s native unit is never overwritten. Weekly files still convert using the stored native unit.
+10. **Historical and weekly files.** I separated Initial Setup (one combined historical file: logger, city, fridge, time, temperature) from Weekly Upload (Time/Temp logger files) because the workflows and available information differ. Review is a dry run. Historical import is atomic so a failed combined file does not leave a half-loaded history; weekly import can succeed file by file so one bad logger does not block other branches. Commits live in the upload/seed caller, not in the ingestion service.
 
-9. **Duplicate readings.** The unique key is logger and time. An identical repeat is skipped. If values or fridges disagree, the conflict is reported and the first stored reading is kept.
+11. **Mobile-friendly design.** Summer mainly uses her phone, so I chose a responsive web app rather than a separate native app. It also works on a computer without a separate install. Docker Compose and PostgreSQL run on a laptop without accounts or paid services and keep imported data after restarts.
 
-10. **Historical and weekly files.** Initial Setup loads one combined historical file (logger, city, fridge, time, temperature). Weekly Upload loads Time/Temp logger files. Review is a dry run. Historical import is atomic. Weekly import can succeed file by file so one bad logger does not block other branches.
+12. **Dashboard layout.** I wanted Summer to understand the main problems quickly without too many numbers, so I focused the counters on total fridges, sustained high-temperature problems, and fridges with no readings. Other findings, such as gradual warming, appear on individual fridge cards; cards already show timestamps for high-temperature events (start times and recovery wording from the overview `excursions` list), but gradual-warming date and time are not yet displayed there. Fridges are grouped by branch (A–Z), with week and branch filters and red/amber/green/neutral findings; Fridge Details (opened from a card, not a third main-nav item) has daily charts. This is a weekly retrospective report, not live monitoring, and navigation uses `useState` (Dashboard / Weekly Upload / Initial Setup), so there are no deep links.
 
-11. **Mobile-friendly design.** A responsive web app, not a native app, because Summer mainly uses her phone. It also works on a computer without a separate install. Docker Compose and PostgreSQL run on a laptop without accounts or paid services and keep imported data after restarts.
+13. **Supported file types.** I limited imports to `.xlsx` so the first version stayed manageable and thoroughly tested, while still supporting the assignment examples. Other formats would need more testing and were not required by the examples.
 
-12. **Dashboard layout.** Fridges are grouped by branch (A–Z). Branch and week filters, KPI counters, and red/amber/green/neutral findings help find problems quickly. Cards already show timestamps for high-temperature events (start times and recovery wording from the overview `excursions` list). Gradual warming is detected, but its date and time are not yet displayed on the Dashboard cards. Fridge Details (opened from a card, not a third main-nav item) has daily charts. This is a weekly retrospective report, not live monitoring. Navigation uses `useState` (Dashboard / Weekly Upload / Initial Setup), so there are no deep links.
+14. **Sample data.** Only 16 example rows were provided, not the full ~3,000-row file, so I kept that original sample and used additional synthetic tests for more realistic cases. The sample has 15 unique readings (one in-file duplicate, one `ERR` stored as NULL with the raw text kept in `raw_value` / `raw_timestamp`; blank/NaN also become NULL temperature). Extreme values such as 150 are stored as given; there is no range filter.
 
-13. **Supported file types.** Uploads are `.xlsx` only. Other formats would need more testing and were not required by the examples.
-
-14. **Sample data.** Only 16 example rows were provided, not the full ~3,000-row file. The sample has 15 unique readings (one in-file duplicate, one `ERR` stored as NULL with the raw text kept). That sample plus extra tests cover other situations. Extreme values such as 150 are stored as given; there is no range filter.
-
-15. **Local setup.** Docker Compose and PostgreSQL, as above. Migrations and the sample seed are manual (`alembic upgrade head`, then `python -m app.seed`). Reporting weeks are ISO 8601 Monday–Sunday (`WEEK_START_DAY=0`), provisional until Summer confirms.
-
-Raw invalid values are preserved (`raw_value`, `raw_timestamp`). `ERR`/blank/NaN become NULL temperature. Commits live in the upload/seed caller, not in the ingestion service.
+15. **Local setup.** I considered SQLite because it would have been simpler for a small local application. I chose PostgreSQL for the structured relationships between loggers, fridges, assignments, and temperature readings, and partly because future branch managers might upload files concurrently — that concurrent multi-user case is a possible future use case, not an implemented feature. Imported data should remain after the original Excel file is gone; that persistence is a benefit of database storage generally, not unique to PostgreSQL. The trade-off is a slightly more complex Docker Compose setup; migrations and the sample seed are manual (`alembic upgrade head`, then `python -m app.seed`). Reporting weeks are ISO 8601 Monday–Sunday (`WEEK_START_DAY=0`), provisional until Summer confirms.
 
 ## 3. Questions for Summer before going live
 
@@ -107,7 +101,13 @@ These are future improvements, not implemented features.
 
 ### With one more hour
 
-My priority would be to add a downloadable historical temperature report for the health inspector, making it easier for Summer to share the exact dates, times and durations of problems.
+If I had one more hour, I would start with a basic downloadable report for the health inspector. The following are my priorities, in order, but I would not expect to complete all of them.
+
+1. **Downloadable report:** Add a basic report that Summer could share with the health inspector, including temperature problems, dates, and recorded durations.
+
+2. **Gradual warming timestamps:** Show when gradual warming was detected directly on the Dashboard cards, without requiring Summer to open each fridge.
+
+3. **Additional reliability testing:** Add an automated end-to-end test covering the main flow: upload an Excel file, review it, import the readings, and verify the results on the Dashboard. I would also like to test repeated imports and concurrent uploads more thoroughly.
 
 ## 5. AI tools and lessons learned
 
