@@ -17,13 +17,29 @@ Open a terminal and run these commands in order:
 git clone https://github.com/einan-202/fridge-temperature-monitor.git
 cd fridge-temperature-monitor
 cp .env.example .env
+```
+
+Optional — if Docker Desktop is installed but not running:
+
+```bash
+docker desktop start
+```
+
+You can also launch Docker Desktop manually if this command is unavailable. Docker Desktop must be running before Docker Compose.
+
+```bash
 docker compose up -d --build
 ```
 
-Wait until the containers are healthy (`docker compose ps` should show them as running/healthy), then:
+Wait until the containers are healthy (`docker compose ps` should show them as running/healthy), then run the required Alembic migrations:
 
 ```bash
 docker compose exec backend alembic upgrade head
+```
+
+Seeding is optional and only loads demo data. Skip it if you prefer to import data later in Initial Setup (Initial Setup works without seed after migrations):
+
+```bash
 docker compose exec backend python -m app.seed
 ```
 
