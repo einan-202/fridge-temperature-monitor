@@ -2,6 +2,10 @@
 
 These folders hold **synthetic test workbooks**. They are not real bakery measurements.
 
+**View test files online:** [Google Drive — Test Sets](https://drive.google.com/drive/folders/1iqOsDiaPqj30ozO71Hk9s3xBEsqLqACM?usp=sharing)
+
+You can preview the Excel test files in Google Drive or open them with Google Sheets. To test imports in the app, use the original .xlsx files from this repository.
+
 Each file under `00_first_set`, `01_supported_now`, `02_aliases_after_change`, and `03_reject_safely` is a **separate weekly logger export**. Use those in **Weekly Upload**, not Initial Setup (Initial Setup expects one combined historical file). A larger historical demo file for Initial Setup is in `historical/` (see below).
 
 **Importing files changes your local database.** Review first. Import only files you intend to keep. Do not run the sample seed command against these weekly files.
